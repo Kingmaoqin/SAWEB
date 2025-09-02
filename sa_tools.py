@@ -116,7 +116,7 @@ def run_survival_analysis(
         "lambda_smooth", "lambda_expert", "expert_rules",
         "ig_steps", "latent_dim", "extreme_dim",
         "gen_epochs", "gen_batch", "gen_lr", "gen_alpha_dist",
-        "num_intervals", "n_bins", "image_encoder"
+        "num_intervals", "n_bins"
     ]
     for k in passthrough:
         if k in kwargs and kwargs[k] is not None:

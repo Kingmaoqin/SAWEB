@@ -192,7 +192,7 @@ class MultiModalDataset(Dataset):
     def __len__(self) -> int:
         return len(self.df)
 
-    def __getitem__(self, idx: int):
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, Optional[torch.Tensor], torch.Tensor, torch.Tensor]:
         row = self.df.iloc[idx]
         tabular = torch.tensor(row[self.feature_cols].values, dtype=torch.float32)
         duration = torch.tensor(row[self.time_col], dtype=torch.float32)
@@ -218,7 +218,7 @@ def create_dataloaders(
     train_ds = MultiTaskDataset(X_train, y_train, m_train)
     val_ds   = MultiTaskDataset(X_val,   y_val,   m_val)
 
-# make pin/persistent safe for both CPU and GPU + num_workers=0
+    # make pin/persistent safe for both CPU and GPU + num_workers=0
     pin_memory = torch.cuda.is_available()
     use_persistent = bool(num_workers and num_workers > 0)
 
