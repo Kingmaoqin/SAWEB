@@ -3,6 +3,7 @@
 import json
 import streamlit as st
 import pandas as pd
+from typing import Optional
 from models import coxtime, deepsurv, deephit
 
 # Prefer the new MySA; fall back to legacy texgisa; allow missing
@@ -76,6 +77,7 @@ def run_survival_analysis(
     batch_size: int = 64,
     epochs: int = 100,
     lr: float = 0.01,
+    image_encoder: Optional[str] = None,
     sampling_rate: float | None = None,
     window_size: int | None = None,
     **kwargs
@@ -120,6 +122,8 @@ def run_survival_analysis(
         "event_col": "event",
         "feature_cols": feature_cols,
     }
+    if image_encoder is not None:
+        config["image_encoder"] = image_encoder
 
     if sampling_rate is not None:
         config["sampling_rate"] = float(sampling_rate)
