@@ -1,8 +1,10 @@
+import os
 import pandas as pd
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
 from typing import List, Tuple, Optional, Callable
+
 
 from sa_data_manager import DataManager
 from preprocess.image import load_image, default_image_transform
@@ -123,7 +125,6 @@ class MultiTaskDataset(Dataset):
     def __getitem__(self, idx):
         return self.X[idx], self.y[idx], self.m[idx]
 
-
 class MultiModalDataset(Dataset):
     """Dataset handling tabular and image data loaded from :class:`DataManager`.
 
@@ -207,6 +208,7 @@ class MultiModalDataset(Dataset):
                     image = self.encoder(image.unsqueeze(0)).squeeze()
 
         return tabular, image, duration, event
+
 
 
 def create_dataloaders(

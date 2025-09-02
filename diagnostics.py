@@ -7,7 +7,7 @@ import torch
 import matplotlib.pyplot as plt
 
 from data import make_intervals, build_supervision, infer_feature_cols
-from model import MultiTaskModel
+from model import MultiTaskModel, load_model
 from metrics import cindex_fast
 
 
@@ -140,9 +140,12 @@ def main():
 
     # Load model
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = MultiTaskModel(input_dim=X_all.shape[1], num_bins=num_bins)
-    state = torch.load(args.model_path, map_location=device)
-    model.load_state_dict(state)
+    try:
+        model = load_model(args.model_path, map_location=device)
+    except Exception:
+        model = MultiTaskModel(input_dim=X_all.shape[1], num_bins=num_bins)
+        state = torch.load(args.model_path, map_location=device)
+        model.load_state_dict(state)
     model.to(device)
 
     # Predictions

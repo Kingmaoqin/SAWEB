@@ -78,10 +78,24 @@ def run_survival_analysis(
     epochs: int = 100,
     lr: float = 0.01,
     image_encoder: Optional[str] = None,
+    sampling_rate: float | None = None,
+    window_size: int | None = None,
     **kwargs
 ) -> dict:
-    """
-    Runs a specified survival analysis model on the currently loaded dataset.
+    """Runs a specified survival analysis model on the currently loaded dataset.
+
+    Parameters
+    ----------
+    algorithm_name : str
+        Name of the algorithm to run.
+    time_col, event_col : str
+        Columns identifying duration and event indicator.
+    batch_size, epochs, lr : int or float
+        Training hyperparameters.
+    sampling_rate : float, optional
+        Desired sampling rate (Hz) for sensor processing.
+    window_size : int, optional
+        Length of sliding windows for sensor sequences.
     """
     # 确保 DataManager 存在
     if "data_manager" not in st.session_state:
@@ -110,6 +124,11 @@ def run_survival_analysis(
     }
     if image_encoder is not None:
         config["image_encoder"] = image_encoder
+
+    if sampling_rate is not None:
+        config["sampling_rate"] = float(sampling_rate)
+    if window_size is not None:
+        config["window_size"] = int(window_size)
 
     # 透传 MySA/TEXGISA 的可选参数（如果调用方传了就生效）
     passthrough = [

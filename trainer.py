@@ -53,7 +53,7 @@ class Trainer:
 
     def step(self, batch):
         X, y, m = batch
-        X = X.to(self.device, non_blocking=True)
+        X = {k: v.to(self.device, non_blocking=True) for k, v in X.items()}
         y = y.to(self.device, non_blocking=True)
         m = m.to(self.device, non_blocking=True)
 
@@ -75,7 +75,7 @@ class Trainer:
         self.model.eval()
         all_risk = []
         for X, y, m in loader:
-            X = X.to(self.device, non_blocking=True)
+            X = {k: v.to(self.device, non_blocking=True) for k, v in X.items()}
             hazards = self.model(X)  # [B, T]
             # risk proxy: sum of hazards (monotonic with cumulative hazard)
             risk = hazards.sum(dim=1)  # [B]
@@ -104,5 +104,12 @@ class Trainer:
 
             if val_c > best["val_cindex"]:
                 best = {"val_cindex": val_c, "epoch": ep}
-                torch.save(self.model.state_dict(), "model.pt")
+                torch.save(
+                    {
+                        "class": self.model.__class__.__name__,
+                        "config": getattr(self.model, "config", {}),
+                        "state_dict": self.model.state_dict(),
+                    },
+                    "model.pt",
+                )
         print(f"Best val C-index={best['val_cindex']:.4f} @ epoch {best['epoch']}")
