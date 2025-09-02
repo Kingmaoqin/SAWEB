@@ -1,12 +1,16 @@
 # sa_data_manager.py (Updated Version)
 
 import pandas as pd
-from typing import Any, Optional
+
+import zipfile
+from typing import Optional, List,  Any
+
 
 class DataManager:
     """A simple singleton-like class to manage the active dataset."""
     def __init__(self):
         self._data: Optional[pd.DataFrame] = None
+
         self._sensor_data: Optional[Any] = None
         self._image_data: Optional[Any] = None
         self._file_name: Optional[str] = None  # Add file_name attribute
@@ -17,15 +21,34 @@ class DataManager:
         self._data = data
         self._file_name = file_name
 
-    def load_sensor_data(self, data: Any):
-        """Loads sensor data into the manager."""
-        print("Sensor data loaded into SA Data Manager.")
-        self._sensor_data = data
 
-    def load_image_data(self, data: Any):
-        """Loads image data into the manager."""
-        print("Image data loaded into SA Data Manager.")
-        self._image_data = data
+    def load_sensor(self, file) -> List[str]:
+        """Loads sensor data from a CSV or JSON file."""
+        if file.name.endswith('.csv'):
+            data = pd.read_csv(file)
+        elif file.name.endswith('.json'):
+            data = pd.read_json(file)
+        else:
+            raise ValueError("Unsupported sensor file format.")
+        self.load_data(data, file.name)
+        return [file.name]
+
+    def load_image(self, file) -> List[str]:
+        """Loads image file names from a ZIP archive."""
+        with zipfile.ZipFile(file) as zf:
+            image_names = [
+                info.filename
+                for info in zf.infolist()
+                if info.filename.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.gif'))
+            ]
+        self._image_files = image_names
+        self._file_name = file.name
+        return image_names
+
+    def get_image_files(self) -> List[str]:
+        """Returns the names of loaded image files."""
+        return self._image_files
+
 
     def get_data(self) -> Optional[pd.DataFrame]:
         """Retrieves the loaded DataFrame."""
