@@ -1,11 +1,18 @@
+import os
 import pandas as pd
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
 from typing import List, Tuple, Optional
 
-__all__ = ["make_intervals", "build_supervision", "infer_feature_cols",
-           "MultiTaskDataset", "create_dataloaders"]
+__all__ = [
+    "make_intervals",
+    "build_supervision",
+    "infer_feature_cols",
+    "MultiTaskDataset",
+    "SensorDataset",
+    "create_dataloaders",
+]
 
 def make_intervals(
     df: pd.DataFrame,
@@ -113,6 +120,40 @@ class MultiTaskDataset(Dataset):
 
     def __getitem__(self, idx):
         return self.X[idx], self.y[idx], self.m[idx]
+
+
+class SensorDataset(Dataset):
+    """Dataset for preprocessed sensor sequences per patient.
+
+    Each patient has a ``.npy`` file named ``<patient_id>.npy`` inside a
+    directory. The file should contain a numeric array of shape ``(T, F)``.
+
+    Parameters
+    ----------
+    directory : str
+        Path to the directory containing ``.npy`` files.
+    patient_ids : list of str, optional
+        Subset of patient identifiers to load. If ``None``, all ``.npy`` files
+        in ``directory`` are used.
+    """
+
+    def __init__(self, directory: str, patient_ids: Optional[List[str]] = None):
+        self.directory = directory
+        if patient_ids is None:
+            files = [f for f in os.listdir(directory) if f.endswith(".npy")]
+            patient_ids = [os.path.splitext(f)[0] for f in files]
+            patient_ids.sort()
+        self.patient_ids = patient_ids
+
+    def __len__(self) -> int:
+        return len(self.patient_ids)
+
+    def __getitem__(self, idx: int):
+        pid = self.patient_ids[idx]
+        path = os.path.join(self.directory, f"{pid}.npy")
+        arr = np.load(path)
+        tensor = torch.from_numpy(arr.astype(np.float32))
+        return pid, tensor
 
 
 def create_dataloaders(
