@@ -3,6 +3,7 @@
 import json
 import streamlit as st
 import pandas as pd
+from typing import Optional
 from models import coxtime, deepsurv, deephit
 
 # Prefer the new MySA; fall back to legacy texgisa; allow missing
@@ -76,6 +77,7 @@ def run_survival_analysis(
     batch_size: int = 64,
     epochs: int = 100,
     lr: float = 0.01,
+    image_encoder: Optional[str] = None,
     **kwargs
 ) -> dict:
     """
@@ -106,13 +108,15 @@ def run_survival_analysis(
         "event_col": "event",
         "feature_cols": feature_cols,
     }
+    if image_encoder is not None:
+        config["image_encoder"] = image_encoder
 
     # 透传 MySA/TEXGISA 的可选参数（如果调用方传了就生效）
     passthrough = [
         "lambda_smooth", "lambda_expert", "expert_rules",
         "ig_steps", "latent_dim", "extreme_dim",
         "gen_epochs", "gen_batch", "gen_lr", "gen_alpha_dist",
-        "num_intervals", "n_bins"
+        "num_intervals", "n_bins", "image_encoder"
     ]
     for k in passthrough:
         if k in kwargs and kwargs[k] is not None:

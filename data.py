@@ -2,10 +2,19 @@ import pandas as pd
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Callable
 
-__all__ = ["make_intervals", "build_supervision", "infer_feature_cols",
-           "MultiTaskDataset", "create_dataloaders"]
+from sa_data_manager import DataManager
+from preprocess.image import load_image, default_image_transform
+
+__all__ = [
+    "make_intervals",
+    "build_supervision",
+    "infer_feature_cols",
+    "MultiTaskDataset",
+    "MultiModalDataset",
+    "create_dataloaders",
+]
 
 def make_intervals(
     df: pd.DataFrame,
@@ -113,6 +122,91 @@ class MultiTaskDataset(Dataset):
 
     def __getitem__(self, idx):
         return self.X[idx], self.y[idx], self.m[idx]
+
+
+class MultiModalDataset(Dataset):
+    """Dataset handling tabular and image data loaded from :class:`DataManager`.
+
+    Parameters
+    ----------
+    data_manager: DataManager
+        Manager holding the DataFrame with data. The DataFrame must contain
+        columns for the tabular features, the survival labels, and optionally
+        a column with image file paths.
+    feature_cols: List[str]
+        Names of numeric columns to be used as tabular features.
+    time_col: str
+        Column name for the event/censoring time.
+    event_col: str
+        Column name for the event indicator (1 if event occurred, else 0).
+    image_path_col: Optional[str]
+        Column containing file paths to the images. If ``None``, image tensors
+        are omitted.
+    transform: callable, optional
+        Transformation applied to images. Defaults to
+        :func:`preprocess.image.default_image_transform`.
+    encoder: Optional[str]
+        Name of a torchvision model to use for feature extraction. Currently
+        supports ``"resnet18"``. If ``None``, raw image tensors are returned.
+    """
+
+    def __init__(
+        self,
+        data_manager: DataManager,
+        feature_cols: List[str],
+        time_col: str,
+        event_col: str,
+        image_path_col: Optional[str] = None,
+        transform: Optional[Callable] = None,
+        encoder: Optional[str] = None,
+    ):
+        df = data_manager.get_data()
+        if df is None:
+            raise ValueError("DataManager has no data loaded.")
+
+        self.df = df.reset_index(drop=True)
+        self.feature_cols = feature_cols
+        self.time_col = time_col
+        self.event_col = event_col
+        self.image_path_col = image_path_col
+        self.transform = transform or default_image_transform()
+        self.encoder = self._init_encoder(encoder)
+
+    def _init_encoder(self, name: Optional[str]):
+        if not name:
+            return None
+
+        name = name.lower()
+        if name == "resnet18":
+            from torchvision.models import resnet18, ResNet18_Weights
+
+            model = resnet18(weights=ResNet18_Weights.DEFAULT)
+            modules = list(model.children())[:-1]
+            encoder = torch.nn.Sequential(*modules)
+            encoder.eval()
+            for p in encoder.parameters():
+                p.requires_grad = False
+            return encoder
+        raise ValueError(f"Unknown encoder: {name}")
+
+    def __len__(self) -> int:
+        return len(self.df)
+
+    def __getitem__(self, idx: int):
+        row = self.df.iloc[idx]
+        tabular = torch.tensor(row[self.feature_cols].values, dtype=torch.float32)
+        duration = torch.tensor(row[self.time_col], dtype=torch.float32)
+        event = torch.tensor(row[self.event_col], dtype=torch.float32)
+
+        image = None
+        if self.image_path_col is not None:
+            path = row[self.image_path_col]
+            image = load_image(path, self.transform)
+            if self.encoder is not None:
+                with torch.no_grad():
+                    image = self.encoder(image.unsqueeze(0)).squeeze()
+
+        return tabular, image, duration, event
 
 
 def create_dataloaders(
