@@ -1,7 +1,13 @@
 # sa_data_manager.py (Updated Version)
 
+import io
+from typing import Optional, List, Dict, Any, Union
+
+import numpy as np
 import pandas as pd
+from PIL import Image
 from typing import Any, Optional
+
 
 class DataManager:
     """A simple singleton-like class to manage the active dataset."""
@@ -41,12 +47,12 @@ class DataManager:
 
     def get_data_summary(self) -> dict:
         """Returns a summary of the loaded data."""
-        if self._data is None and self._sensor_data is None and self._image_data is None:
-            return {
-                "error": "No data has been loaded. Please upload a dataset on the 'Run Models' page."
-            }
 
-        summary = {
+        if self._data is None:
+            return {"error": "No data has been loaded. Please upload a dataset on the 'Run Models' page."}
+
+        return {
+
             "file_name": self._file_name,
             "num_rows": int(self._data.shape[0]) if self._data is not None else None,
             "num_columns": int(self._data.shape[1]) if self._data is not None else None,
@@ -55,16 +61,61 @@ class DataManager:
             "modalities": {}
         }
 
-        if self._data is not None:
-            summary["modalities"]["tabular"] = {"shape": tuple(self._data.shape)}
+    def get_sensor_summary(self) -> Union[List[Dict[str, int]], Dict[str, str]]:
+        """Return length and channel information for sensor-like columns."""
+        if self._data is None:
+            return {"error": "No data has been loaded. Please upload a dataset on the 'Run Models' page."}
 
-        if self._sensor_data is not None:
-            shape = getattr(self._sensor_data, "shape", None)
-            summary["modalities"]["sensor"] = {"shape": tuple(shape) if shape is not None else None}
+        summaries: List[Dict[str, int]] = []
+        for col in self._data.columns:
+            series = self._data[col].dropna()
+            if series.empty:
+                continue
+            first = series.iloc[0]
+            if isinstance(first, (list, tuple, np.ndarray, pd.Series)):
+                arr = np.asarray(first)
+                length = int(arr.shape[0])
+                channels = int(arr.shape[1]) if arr.ndim > 1 else 1
+                summaries.append({"column": col, "length": length, "channels": channels})
+        if not summaries:
+            return {"error": "No sensor data columns detected."}
+        return summaries
 
-        if self._image_data is not None:
-            shape = getattr(self._image_data, "shape", None)
-            summary["modalities"]["image"] = {"shape": tuple(shape) if shape is not None else None}
+    def get_image_summary(self) -> Union[List[Dict[str, Any]], Dict[str, str]]:
+        """Return thumbnails and shapes for image-like columns."""
+        if self._data is None:
+            return {"error": "No data has been loaded. Please upload a dataset on the 'Run Models' page."}
 
-        return summary
+        summaries: List[Dict[str, Any]] = []
+        for col in self._data.columns:
+            series = self._data[col].dropna()
+            if series.empty:
+                continue
+            first = series.iloc[0]
+            image = None
+            if isinstance(first, Image.Image):
+                image = first
+            elif isinstance(first, (bytes, bytearray)):
+                try:
+                    image = Image.open(io.BytesIO(first))
+                except Exception:
+                    image = None
+            elif isinstance(first, np.ndarray):
+                try:
+                    image = Image.fromarray(first)
+                except Exception:
+                    image = None
+            elif isinstance(first, str) and first.lower().endswith((".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tiff")):
+                try:
+                    image = Image.open(first)
+                except Exception:
+                    image = None
+
+            if image is not None:
+                shape = (image.height, image.width, len(image.getbands()))
+                summaries.append({"column": col, "image": image, "shape": shape})
+
+        if not summaries:
+            return {"error": "No image data columns detected."}
+        return summaries
 
