@@ -1,11 +1,10 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from torch.optim import Adam
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.cuda.amp import autocast, GradScaler
 from torch.nn.utils import clip_grad_norm_
-from typing import Optional, Dict
+from typing import Optional, Dict, Any
 
 from metrics import cindex_fast
 
@@ -51,17 +50,48 @@ class Trainer:
         self.scaler = GradScaler(enabled=True)
         self.lambda_smooth = float(lambda_smooth)
 
-    def step(self, batch):
-        X, y, m = batch
-        X = X.to(self.device, non_blocking=True)
-        y = y.to(self.device, non_blocking=True)
-        m = m.to(self.device, non_blocking=True)
+    def _move_to_device(self, obj: Any):
+        if torch.is_tensor(obj):
+            return obj.to(self.device, non_blocking=True)
+        if isinstance(obj, dict):
+            return {k: self._move_to_device(v) for k, v in obj.items()}
+        if isinstance(obj, (list, tuple)):
+            return type(obj)(*(self._move_to_device(v) for v in obj))
+        return obj
 
-        with autocast(enabled=True):
-            hazards = self.model(X)           # [B, T]
-            loss_main = masked_bce_nll(hazards, y, m)
-            loss_smooth = smooth_l1_temporal(hazards, self.lambda_smooth)
-            loss = loss_main + loss_smooth
+    def _get(self, batch: Any, name: str):
+        if isinstance(batch, dict):
+            return batch[name]
+        if hasattr(batch, name):
+            return getattr(batch, name)
+        if isinstance(batch, (list, tuple)):
+            idx_map = {"y": 1, "m": 2}
+            if name in idx_map and len(batch) > idx_map[name]:
+                return batch[idx_map[name]]
+        raise KeyError(f"Field '{name}' not found in batch")
+
+    def step(self, batch):
+        if isinstance(batch, (list, tuple)) and not hasattr(batch, "_fields"):
+            X, y, m = batch
+            X = X.to(self.device, non_blocking=True)
+            y = y.to(self.device, non_blocking=True)
+            m = m.to(self.device, non_blocking=True)
+
+            with autocast(enabled=True):
+                hazards = self.model(X)  # [B, T]
+                loss_main = masked_bce_nll(hazards, y, m)
+                loss_smooth = smooth_l1_temporal(hazards, self.lambda_smooth)
+                loss = loss_main + loss_smooth
+        else:
+            batch = self._move_to_device(batch)
+            y = self._get(batch, "y")
+            m = self._get(batch, "m")
+
+            with autocast(enabled=True):
+                hazards = self.model(batch)  # [B, T]
+                loss_main = masked_bce_nll(hazards, y, m)
+                loss_smooth = smooth_l1_temporal(hazards, self.lambda_smooth)
+                loss = loss_main + loss_smooth
 
         self.opt.zero_grad(set_to_none=True)
         self.scaler.scale(loss).backward()
@@ -74,14 +104,16 @@ class Trainer:
     def evaluate(self, loader, durations, events):
         self.model.eval()
         all_risk = []
-        for X, y, m in loader:
-            X = X.to(self.device, non_blocking=True)
-            hazards = self.model(X)  # [B, T]
-            # risk proxy: sum of hazards (monotonic with cumulative hazard)
+        for batch in loader:
+            if isinstance(batch, (list, tuple)) and not hasattr(batch, "_fields"):
+                X = batch[0].to(self.device, non_blocking=True)
+                hazards = self.model(X)  # [B, T]
+            else:
+                batch = self._move_to_device(batch)
+                hazards = self.model(batch)  # [B, T]
             risk = hazards.sum(dim=1)  # [B]
             all_risk.append(risk.cpu())
         risks = torch.cat(all_risk, dim=0)
-        # durations/events are provided from the same val set order
         c = cindex_fast(durations, events, risks)
         return c.item()
 
