@@ -732,7 +732,9 @@ def show():
                         )
                     st.session_state["clinical_data"] = df_img
                     if "data_manager" in st.session_state:
-                        st.session_state.data_manager.load_data(df_img, f"images+{backbone}")
+                        dm = st.session_state.data_manager
+                        dm.load_data(df_img, f"images+{backbone}")
+                        dm.load_multimodal_data(image_df=df_img)
                     st.success(f"✅ Generated: {df_img.shape[0]} rows × {df_img.shape[1]} columns")
                     st.dataframe(df_img.head(), use_container_width=True)
                 except Exception as e:
@@ -886,13 +888,93 @@ def show():
                         )
                     st.session_state["clinical_data"] = df_sens
                     if "data_manager" in st.session_state:
-                        st.session_state.data_manager.load_data(df_sens, f"sensors_fullseq")
+                        dm = st.session_state.data_manager
+                        dm.load_data(df_sens, f"sensors_fullseq")
+                        dm.load_multimodal_data(sensor_df=df_sens)
                     st.success(f"✅ Generated: {df_sens.shape[0]} rows × {df_sens.shape[1]} columns")
                     st.dataframe(df_sens.head(), use_container_width=True)
                 except Exception as e:
                     st.error(f"Failed: {e}")
     # === End of sensor wizard ======================================================
 
+
+    # ===================== Multimodal data upload =============================
+    with st.expander("🗂 Multimodal Data Upload", expanded=False):
+        tab_up = st.file_uploader("Tabular CSV", type=["csv"], key="mm_tabular")
+        img_up = st.file_uploader("Image CSV", type=["csv"], key="mm_image")
+        sens_up = st.file_uploader("Sensor CSV", type=["csv"], key="mm_sensor")
+
+        if tab_up is not None:
+            tab_df = pd.read_csv(tab_up)
+            st.session_state["mm_tabular_df"] = tab_df
+            st.dataframe(tab_df.head(), use_container_width=True)
+        if img_up is not None:
+            img_df = pd.read_csv(img_up)
+            st.session_state["mm_image_df"] = img_df
+            st.dataframe(img_df.head(), use_container_width=True)
+        if sens_up is not None:
+            sens_df = pd.read_csv(sens_up)
+            st.session_state["mm_sensor_df"] = sens_df
+            st.dataframe(sens_df.head(), use_container_width=True)
+
+        has_any = any(
+            k in st.session_state for k in ["mm_tabular_df", "mm_image_df", "mm_sensor_df"]
+        )
+        if has_any:
+            st.markdown("### Field Alignment")
+            tab_id = img_id = sens_id = None
+            if "mm_tabular_df" in st.session_state:
+                tab_id = st.selectbox(
+                    "Tabular ID column",
+                    st.session_state["mm_tabular_df"].columns,
+                    key="mm_tab_id",
+                )
+            if "mm_image_df" in st.session_state:
+                img_id = st.selectbox(
+                    "Image ID column",
+                    st.session_state["mm_image_df"].columns,
+                    key="mm_img_id",
+                )
+            if "mm_sensor_df" in st.session_state:
+                sens_id = st.selectbox(
+                    "Sensor ID column",
+                    st.session_state["mm_sensor_df"].columns,
+                    key="mm_sens_id",
+                )
+
+            if st.button("Load Multimodal Data"):
+                combined = st.session_state.get("mm_tabular_df")
+                if combined is None:
+                    st.warning("Tabular data is required for alignment.")
+                else:
+                    if "mm_image_df" in st.session_state and img_id:
+                        combined = combined.merge(
+                            st.session_state["mm_image_df"],
+                            left_on=tab_id,
+                            right_on=img_id,
+                            how="left",
+                        )
+                    if "mm_sensor_df" in st.session_state and sens_id:
+                        combined = combined.merge(
+                            st.session_state["mm_sensor_df"],
+                            left_on=tab_id,
+                            right_on=sens_id,
+                            how="left",
+                        )
+
+                    st.session_state["clinical_data"] = combined
+                    if "data_manager" in st.session_state:
+                        dm = st.session_state.data_manager
+                        dm.load_multimodal_data(
+                            tabular_df=st.session_state.get("mm_tabular_df"),
+                            image_df=st.session_state.get("mm_image_df"),
+                            sensor_df=st.session_state.get("mm_sensor_df"),
+                        )
+                        dm.load_data(combined, "multimodal_combined")
+                    st.success(
+                        f"✅ Loaded multimodal data ({combined.shape[0]} rows × {combined.shape[1]} columns)"
+                    )
+                    st.dataframe(combined.head(), use_container_width=True)
 
     # ===================== 1) Data upload & preview ===========================
     with st.expander("📘 Step-by-Step Guide for Tabular Data", expanded=False):
@@ -908,7 +990,9 @@ def show():
             data = pd.read_csv(uploaded)
             st.session_state["clinical_data"] = data
             if "data_manager" in st.session_state:
-                st.session_state.data_manager.load_data(data, uploaded.name)
+                dm = st.session_state.data_manager
+                dm.load_data(data, uploaded.name)
+                dm.load_multimodal_data(tabular_df=data)
             st.success(f"✅ Loaded '{uploaded.name}' ({data.shape[0]} rows, {data.shape[1]} cols)")
             st.dataframe(data.head(5), use_container_width=True)
         except Exception as e:
