@@ -58,8 +58,8 @@ class MultiModalSurvivalModel(nn.Module):
             gate_logits.append(self.gates[name](h))
 
         gate_logits = torch.cat(gate_logits, dim=1)
-        # mask out missing modalities in gating by adding large negative number
-        gate_logits = gate_logits + (modality_masks - 1) * 1e9
+        # mask out missing modalities by setting their logits to a large negative value
+        gate_logits = gate_logits.masked_fill(modality_masks == 0, -1e4)
         attn = torch.softmax(gate_logits, dim=1)  # [B, M]
 
         fused = torch.zeros(B, self.hidden_dim, device=attn.device)
