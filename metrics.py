@@ -9,9 +9,11 @@ def cindex_fast(durations, events, risks):
     events:    [N] 0/1 int/float tensor
     risks:     [N] float tensor (e.g., sum of hazards or cumulative hazard)
     """
-    durations = durations.view(-1)
-    events    = events.view(-1)
-    risks     = risks.view(-1)
+    risks = torch.as_tensor(risks)
+    device = torch.device(risks.device)
+    durations = torch.as_tensor(durations, device=device).view(-1)
+    events    = torch.as_tensor(events, device=device).view(-1)
+    risks     = risks.to(device).view(-1)
 
     # Only comparable pairs where one is an event and the other is at risk longer
     # Create pairwise masks: i < j to avoid double counting
