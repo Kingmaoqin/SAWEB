@@ -13,8 +13,15 @@ modalities = {
     "sensor": np.random.randn(N, 100, 6).astype("float32"),
     "tabular": np.random.randn(N, 20).astype("float32"),
 }
-labels = np.zeros((N, T), dtype="float32")        # one-hot 事件标签 (示例)
-masks  = np.tril(np.ones((N, T), dtype="float32"))  # 风险集掩码
+durations = np.random.randint(1, T + 1, size=N)    # 1~T
+events    = np.random.binomial(1, 0.7, size=N)     # 70% 事件，30% 截尾
+labels = np.zeros((N, T), dtype="float32")
+masks  = np.zeros((N, T), dtype="float32")
+for i in range(N):
+    t = durations[i] - 1            # 事件所在时间 bin（0-based）
+    masks[i, :t + 1] = 1            # 风险集掩码：在 t 前都处于风险集中
+    if events[i] == 1 and t < T:    # 若发生事件，则在对应 bin 置 1
+        labels[i, t] = 1
 
 dataset = MultiModalDataset(modalities, labels, masks, train=True)
 loader  = DataLoader(dataset, batch_size=16, shuffle=True)
@@ -30,6 +37,6 @@ model = MultiModalSurvivalModel(encoders, hidden_dim=64, num_bins=T)
 
 # ---- 3. 训练 ----
 trainer = Trainer(model, lr=1e-3)
-dummy_duration = np.ones(N)    # 示例：真实数据需替换为生存时间
-dummy_event    = np.ones(N)    # 示例：真实数据需替换为事件指示
+dummy_duration = durations
+dummy_event    = events
 trainer.fit(loader, loader, dummy_duration, dummy_event, epochs=5)
