@@ -72,26 +72,23 @@ class Trainer:
 
     def step(self, batch):
         if isinstance(batch, (list, tuple)) and not hasattr(batch, "_fields"):
-            X, y, m = batch
-            X = X.to(self.device, non_blocking=True)
-            y = y.to(self.device, non_blocking=True)
-            m = m.to(self.device, non_blocking=True)
-
-            with autocast(enabled=True):
-                hazards = self.model(X)  # [B, T]
-                loss_main = masked_bce_nll(hazards, y, m)
-                loss_smooth = smooth_l1_temporal(hazards, self.lambda_smooth)
-                loss = loss_main + loss_smooth
+            X, y, m, mod_mask = batch
         else:
-            batch = self._move_to_device(batch)
-            y = self._get(batch, "y")
-            m = self._get(batch, "m")
+            X       = self._get(batch, "x")
+            y       = self._get(batch, "y")
+            m       = self._get(batch, "m")
+            mod_mask = self._get(batch, "mod_mask")
 
-            with autocast(enabled=True):
-                hazards = self.model(batch)  # [B, T]
-                loss_main = masked_bce_nll(hazards, y, m)
-                loss_smooth = smooth_l1_temporal(hazards, self.lambda_smooth)
-                loss = loss_main + loss_smooth
+        X        = self._move_to_device(X)
+        y        = y.to(self.device, non_blocking=True)
+        m        = m.to(self.device, non_blocking=True)
+        mod_mask = mod_mask.to(self.device, non_blocking=True)
+
+        with autocast(enabled=True):
+            hazards     = self.model(X, mod_mask)           # [B, T]
+            loss_main   = masked_bce_nll(hazards, y, m)
+            loss_smooth = smooth_l1_temporal(hazards, self.lambda_smooth)
+            loss        = loss_main + loss_smooth
 
         self.opt.zero_grad(set_to_none=True)
         self.scaler.scale(loss).backward()
@@ -100,19 +97,24 @@ class Trainer:
         self.scaler.update()
         return loss_main.detach().item(), loss_smooth.detach().item()
 
+
     @torch.no_grad()
     def evaluate(self, loader, durations, events):
         self.model.eval()
         all_risk = []
         for batch in loader:
             if isinstance(batch, (list, tuple)) and not hasattr(batch, "_fields"):
-                X = batch[0].to(self.device, non_blocking=True)
-                hazards = self.model(X)  # [B, T]
+                X, _, _, mod_mask = batch
             else:
-                batch = self._move_to_device(batch)
-                hazards = self.model(batch)  # [B, T]
-            risk = hazards.sum(dim=1)  # [B]
+                X       = self._get(batch, "x")
+                mod_mask = self._get(batch, "mod_mask")
+
+            X        = self._move_to_device(X)
+            mod_mask = mod_mask.to(self.device, non_blocking=True)
+            hazards  = self.model(X, mod_mask)               # [B, T]
+            risk     = hazards.sum(dim=1)                    # [B]
             all_risk.append(risk.cpu())
+
         risks = torch.cat(all_risk, dim=0)
         c = cindex_fast(durations, events, risks)
         return c.item()
