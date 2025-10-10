@@ -137,6 +137,7 @@ def images_to_dataframe(
     image_col: str = "image",
     duration_col: str = "duration",
     event_col: str = "event",
+    id_col: Optional[str] = "id",
     batch_size: int = 64,
     num_workers: int = 2,
     device: Optional[str] = None,
@@ -185,7 +186,11 @@ def images_to_dataframe(
     feat_df = pd.DataFrame(feats, columns=feat_cols)
     df = pd.concat([df, feat_df], axis=1)
 
-    # 3) 保留 manifest 中的额外数值特征
+    # 3) 若提供了 ID 列，则保留在最前面方便与其他模态对齐
+    if id_col and id_col in kept.columns:
+        df.insert(0, id_col, kept[id_col].to_numpy())
+
+    # 4) 保留 manifest 中的额外数值特征
     extra_cols = [c for c in kept.columns if c not in {image_col, duration_col, event_col, "_orig_idx"}]
     for c in extra_cols:
         # 仅保留可数值化的列（非数值会被跳过或变成 NaN→填 0）
