@@ -271,6 +271,7 @@ def sensors_to_dataframe(
     file_col: str = "file",
     duration_col: str = "duration",
     event_col: str = "event",
+    id_col: Optional[str] = "id",
     resample_hz: float = 0.0,
     max_rows_per_file: int = 0,
     time_cols=('timestamp','time','datetime','date','Time','Timestamp')
@@ -284,7 +285,7 @@ def sensors_to_dataframe(
     rows = []
     dur_list = []
     evt_list = []
-    idx_list = []
+    id_list: Optional[List] = [] if (id_col and id_col in manifest_df.columns) else None
 
     for idx, r in manifest_df.iterrows():
         rel = str(r[file_col]).strip()
@@ -298,7 +299,8 @@ def sensors_to_dataframe(
             # —— 单独收集，避免 list-of-tuples 维度歧义 ——
             dur_list.append(float(pd.to_numeric(r[duration_col], errors="coerce")))
             evt_list.append(int(pd.to_numeric(r[event_col], errors="coerce")))
-            idx_list.append(idx)
+            if id_list is not None:
+                id_list.append(r[id_col])
         except Exception as e:
             print(f"[sensor_pipeline] 跳过 {rel}: {e}")
             continue
@@ -325,6 +327,8 @@ def sensors_to_dataframe(
         "duration": pd.Series(dur_list, dtype="float32"),
         "event":    pd.Series(evt_list, dtype="int32"),
     })
+    if id_list is not None:
+        de.insert(0, id_col, pd.Series(id_list))
 
     # 安全检查
     if len(de) != len(feat_df):
