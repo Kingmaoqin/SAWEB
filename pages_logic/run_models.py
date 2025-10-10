@@ -520,7 +520,22 @@ def _build_multimodal_sources(config: dict) -> Optional[Dict[str, Any]]:
             "feature_cols": sens_feats,
         }
 
-    extra_modalities = [k for k in ("image", "sensor") if k in sources and sources[k]["feature_cols"]]
+    def _has_features(info: Any) -> bool:
+        """Return True when a modality descriptor contains non-empty features."""
+        if not isinstance(info, dict):
+            return False
+        cols = info.get("feature_cols")
+        if cols is None:
+            return False
+        if isinstance(cols, (list, tuple)):
+            return len(cols) > 0
+        # Support pandas Index / Series etc.
+        try:
+            return bool(len(cols))
+        except TypeError:
+            return False
+
+    extra_modalities = [k for k in ("image", "sensor") if _has_features(sources.get(k))]
     if not extra_modalities:
         return None
 
