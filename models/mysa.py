@@ -26,6 +26,7 @@ import pandas as pd
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.data import Dataset, DataLoader
 
 # ---- robust import guard (optional hardening) ----
 import os, sys, importlib.util, pathlib
@@ -120,6 +121,141 @@ class TabularGeneratorWithRealInput(nn.Module):
         return self.net(torch.cat([x, z, e], dim=1))
 
 
+class TensorDatasetWithMask(Dataset):
+    """Tensor dataset that optionally yields modality availability masks."""
+
+    def __init__(self, X: np.ndarray, y: np.ndarray, m: np.ndarray, mask: Optional[np.ndarray] = None):
+        self.X = torch.from_numpy(X.astype(np.float32))
+        self.y = torch.from_numpy(y.astype(np.float32))
+        self.m = torch.from_numpy(m.astype(np.float32))
+        self.mask = None if mask is None else torch.from_numpy(mask.astype(np.float32))
+
+    def __len__(self) -> int:  # type: ignore[override]
+        return self.X.shape[0]
+
+    def __getitem__(self, idx: int):  # type: ignore[override]
+        if self.mask is None:
+            return self.X[idx], self.y[idx], self.m[idx]
+        return self.X[idx], self.y[idx], self.m[idx], self.mask[idx]
+
+
+def create_tensor_dataloaders(
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    m_train: np.ndarray,
+    X_val: np.ndarray,
+    y_val: np.ndarray,
+    m_val: np.ndarray,
+    *,
+    batch_size: int = 128,
+    num_workers: int = 0,
+    mask_train: Optional[np.ndarray] = None,
+    mask_val: Optional[np.ndarray] = None,
+) -> Tuple[DataLoader, DataLoader]:
+    """Create dataloaders for either single- or multi-modal tensors."""
+
+    train_ds = TensorDatasetWithMask(X_train, y_train, m_train, mask_train)
+    val_ds = TensorDatasetWithMask(X_val, y_val, m_val, mask_val)
+
+    pin_memory = torch.cuda.is_available()
+    use_persistent = bool(num_workers and num_workers > 0)
+
+    train_loader = DataLoader(
+        train_ds,
+        batch_size=batch_size,
+        shuffle=True,
+        drop_last=True,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        persistent_workers=use_persistent,
+    )
+    val_loader = DataLoader(
+        val_ds,
+        batch_size=batch_size,
+        shuffle=False,
+        drop_last=False,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        persistent_workers=use_persistent,
+    )
+    return train_loader, val_loader
+
+
+def _build_encoder(input_dim: int, hidden: int, depth: int, dropout: float) -> nn.Sequential:
+    layers: List[nn.Module] = []
+    d = input_dim
+    for _ in range(max(1, depth)):
+        layers.append(nn.Linear(d, hidden))
+        layers.append(nn.ReLU())
+        if dropout > 0:
+            layers.append(nn.Dropout(dropout))
+        d = hidden
+    return nn.Sequential(*layers)
+
+
+class MultiModalMySAModel(nn.Module):
+    """Lightweight gating-based fusion model for multimodal survival."""
+
+    def __init__(
+        self,
+        modality_slices: List[Tuple[str, slice]],
+        num_bins: int,
+        hidden: int = 256,
+        depth: int = 2,
+        dropout: float = 0.2,
+    ) -> None:
+        super().__init__()
+        if not modality_slices:
+            raise ValueError("At least one modality slice must be provided.")
+
+        self.modality_slices = modality_slices
+        self.hidden = hidden
+
+        encoders = {}
+        gates = {}
+        for name, sl in modality_slices:
+            in_dim = sl.stop - sl.start
+            if in_dim <= 0:
+                raise ValueError(f"Modality '{name}' has non-positive feature dimension: {in_dim}")
+            encoders[name] = _build_encoder(in_dim, hidden, depth, dropout)
+            gates[name] = nn.Linear(hidden, 1)
+
+        self.encoders = nn.ModuleDict(encoders)
+        self.gates = nn.ModuleDict(gates)
+        self.hazard_layer = nn.Linear(hidden, num_bins)
+
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+
+    def forward(self, x: torch.Tensor, modality_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+        B = x.size(0)
+        feats: List[torch.Tensor] = []
+        gate_logits: List[torch.Tensor] = []
+
+        for idx, (name, sl) in enumerate(self.modality_slices):
+            h = self.encoders[name](x[:, sl])
+            if modality_mask is not None:
+                mask = modality_mask[:, idx].unsqueeze(1)
+                h = h * mask
+            feats.append(h)
+            gate_logits.append(self.gates[name](h))
+
+        logits = torch.cat(gate_logits, dim=1)
+        if modality_mask is not None:
+            logits = logits.masked_fill(modality_mask == 0, -1e4)
+
+        attn = torch.softmax(logits, dim=1)
+        fused = torch.zeros(B, self.hidden, device=x.device)
+        for idx, _ in enumerate(self.modality_slices):
+            fused = fused + feats[idx] * attn[:, idx].unsqueeze(1)
+
+        hazards = torch.sigmoid(self.hazard_layer(fused))
+        return hazards
+
+
 @torch.no_grad()
 def _standardize_fit(X: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     mu = X.mean(dim=0, keepdim=True)
@@ -159,6 +295,7 @@ def train_adv_generator(
     lr: float = 1e-3,
     alpha_dist: float = 1.0,
     device: Optional[str] = None,
+    modality_mask: Optional[torch.Tensor] = None,
 ) -> Tuple[TabularGeneratorWithRealInput, Dict[str, torch.Tensor]]:
     """
     Train a generator G to produce "adversarial extreme baselines".
@@ -178,6 +315,8 @@ def train_adv_generator(
     N = X_tr.shape[0]
     idx = torch.randperm(N)
     X_std = _standardize_apply(X_tr.to(device), mu.to(device), std.to(device))
+    if modality_mask is not None:
+        modality_mask = modality_mask.to(device)
 
     steps_per_epoch = max(1, N // batch_size)
     for ep in range(1, epochs + 1):
@@ -194,8 +333,15 @@ def train_adv_generator(
             x_adv_real = _destandardize(x_adv, mu.to(device), std.to(device))  # back to real space
 
             # Risk proxy: sum of hazards
+            mask_batch = None
+            if modality_mask is not None:
+                mask_batch = modality_mask[idx[sl:sr]]
+
             with torch.no_grad():
-                hazards = model(x_adv_real)               # [B,T]
+                if mask_batch is not None:
+                    hazards = model(x_adv_real, modality_mask=mask_batch)  # [B,T]
+                else:
+                    hazards = model(x_adv_real)               # [B,T]
                 risk = hazards.sum(dim=1)                 # larger -> earlier event
 
             # Proximity in standardized space
@@ -231,6 +377,7 @@ def integrated_gradients_time(
     X_baseline: torch.Tensor,  # [B, D] (real space)
     hazard_index: int,         # target time-bin
     M: int = 20,
+    forward_kwargs: Optional[Dict[str, Any]] = None,
 ) -> torch.Tensor:
     """
     Compute IG for one time index t along the straight path from baseline to input.
@@ -242,10 +389,12 @@ def integrated_gradients_time(
     Xdiff = (X - X_baseline)
 
     atts = torch.zeros_like(X)
+    kwargs = forward_kwargs or {}
+
     for a in alphas:
         Xpath = X_baseline + a * Xdiff
         Xpath.requires_grad_(True)
-        hazards = f(Xpath)                      # [B, T]
+        hazards = f(Xpath, **kwargs) if kwargs else f(Xpath)  # [B, T]
         out = hazards[:, hazard_index]          # focus on bin t
         grads = torch.autograd.grad(out.sum(), Xpath, retain_graph=False, create_graph=False)[0]
         atts += grads
@@ -262,6 +411,7 @@ def texgi_time_series(
     latent_dim: int = 16,
     extreme_dim: int = 1,
     t_sample: Optional[int] = None,
+    forward_kwargs: Optional[Dict[str, Any]] = None,
 ) -> torch.Tensor:
     """
     Compute TEXGI per time-bin, returning phi with shape [T, B, D].
@@ -283,7 +433,10 @@ def texgi_time_series(
         X_baseline = q_hi.repeat(X.size(0), 1)
 
     with torch.no_grad():
-        T = f(X[:1]).shape[1]
+        if forward_kwargs:
+            T = f(X[:1], **forward_kwargs).shape[1]
+        else:
+            T = f(X[:1]).shape[1]
 
     # 选择本次要参与的时间 bin（随机/等间隔均可）
     if t_sample is not None and t_sample > 0 and t_sample < T:
@@ -296,7 +449,14 @@ def texgi_time_series(
 
     phi_list = []
     for t in t_indices:
-        ig_t = integrated_gradients_time(f, X, X_baseline, hazard_index=t, M=M)
+        ig_t = integrated_gradients_time(
+            f,
+            X,
+            X_baseline,
+            hazard_index=t,
+            M=M,
+            forward_kwargs=forward_kwargs,
+        )
         phi_list.append(ig_t)
 
     # [T', B, D] （如果抽样，T' < T）
@@ -396,6 +556,7 @@ class MySATrainer:
         gen_alpha_dist: float = 1.0,
         ref_stats: Optional[Dict[str, torch.Tensor]] = None,
         X_train_ref: Optional[torch.Tensor] = None,  # real-space training features for generator fit
+        modality_mask_ref: Optional[torch.Tensor] = None,
     ):
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.model = model.to(self.device)
@@ -418,10 +579,29 @@ class MySATrainer:
         self.gen_lr = float(gen_lr)
         self.gen_alpha_dist = float(gen_alpha_dist)
         self.X_train_ref = X_train_ref  # [N,D] float32 tensor
+        self.modality_mask_ref = modality_mask_ref
         self.ig_batch_samples = int(ig_batch_samples)
         self.ig_time_subsample = (int(ig_time_subsample) if ig_time_subsample
                                   else None)
-        
+
+    def _model_forward(self, X: torch.Tensor, modality_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+        if modality_mask is not None:
+            try:
+                return self.model(X, modality_mask=modality_mask)
+            except TypeError:
+                return self.model(X)
+        return self.model(X)
+
+    @staticmethod
+    def _unpack_batch(batch) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+        if isinstance(batch, (list, tuple)):
+            if len(batch) == 3:
+                X, y, m = batch
+                return X, y, m, None
+            if len(batch) == 4:
+                X, y, m, mask = batch
+                return X, y, m, mask
+        raise ValueError("Unexpected batch structure for MySA trainer.")
 
     def fit_generator_if_needed(self):
         if self.lambda_expert <= 0:
@@ -447,17 +627,19 @@ class MySATrainer:
             self.model, Xtr, mu, std,
             epochs=self.gen_epochs, batch_size=self.gen_batch,
             latent_dim=self.latent_dim, extreme_dim=self.extreme_dim,
-            lr=self.gen_lr, alpha_dist=self.gen_alpha_dist, device=self.device
+            lr=self.gen_lr, alpha_dist=self.gen_alpha_dist, device=self.device,
+            modality_mask=self.modality_mask_ref
         )
 
     def step(self, batch) -> Tuple[float, float, float]:
-        X, y, m = batch
+        X, y, m, modality_mask = self._unpack_batch(batch)
         X = X.to(self.device, non_blocking=True)
         y = y.to(self.device, non_blocking=True)
         m = m.to(self.device, non_blocking=True)
+        mask_t = modality_mask.to(self.device, non_blocking=True) if modality_mask is not None else None
 
         self.model.train()
-        hazards = self.model(X)  # [B, T]
+        hazards = self._model_forward(X, mask_t)  # [B, T]
         loss_main = masked_bce_nll(hazards, y, m)
         loss_smooth = smooth_l1_temporal(hazards, self.lambda_smooth)
         loss = loss_main + loss_smooth
@@ -472,10 +654,14 @@ class MySATrainer:
                 sub = min(B, self.ig_batch_samples)
                 idx = torch.randperm(B, device=X.device)[:sub]
                 Xsub = X[idx].detach().clone().requires_grad_(True)
+                mask_sub = None
+                if mask_t is not None:
+                    mask_sub = mask_t[idx].detach()
                 phi = texgi_time_series(
                     self.model, Xsub, self.G, self.ref_stats,
                     M=self.ig_steps, latent_dim=self.latent_dim, extreme_dim=self.extreme_dim,
-                    t_sample=self.ig_time_subsample
+                    t_sample=self.ig_time_subsample,
+                    forward_kwargs={"modality_mask": mask_sub} if mask_sub is not None else None,
                 )
 
                 loss_Omega = expert_penalty(phi, self.expert_rules, self.feat2idx)
@@ -492,9 +678,11 @@ class MySATrainer:
     def evaluate_cindex(self, loader, durations, events) -> float:
         self.model.eval()
         all_risk = []
-        for X, y, m in loader:
+        for batch in loader:
+            X, _, _, modality_mask = self._unpack_batch(batch)
             X = X.to(self.device, non_blocking=True)
-            hazards = self.model(X)
+            mask_t = modality_mask.to(self.device, non_blocking=True) if modality_mask is not None else None
+            hazards = self._model_forward(X, mask_t)
             risk = torch.sum(hazards, dim=1)  # simple risk proxy; larger -> earlier event
             all_risk.append(risk.cpu())
         risks = torch.cat(all_risk, dim=0)
@@ -502,6 +690,237 @@ class MySATrainer:
 
 
 # ------------------------------ Utilities -------------------------------------
+
+
+def _prepare_tabular_inputs(data: pd.DataFrame, config: Dict) -> Dict[str, Any]:
+    df = data.copy().reset_index(drop=True)
+    required_cols = {"duration", "event"}
+    if not required_cols.issubset(df.columns):
+        missing = required_cols - set(df.columns)
+        raise ValueError(f"Missing columns for MySA tabular run: {missing}")
+
+    n_bins = int(config.get("n_bins", 30))
+    df = make_intervals(df, duration_col="duration", event_col="event", n_bins=n_bins, method="quantile")
+    num_bins = int(df["interval_number"].max())
+
+    feat_cols = config.get("feature_cols")
+    if not feat_cols:
+        feat_cols = infer_feature_cols(df, exclude=["duration", "event"])
+    feat2idx = {n: i for i, n in enumerate(feat_cols)}
+
+    val_ratio = float(config.get("val_ratio", 0.2))
+    N = len(df)
+    idx = np.arange(N)
+    rng = np.random.default_rng(42)
+    rng.shuffle(idx)
+    split = int(N * (1.0 - val_ratio))
+    tr, va = idx[:split], idx[split:]
+
+    durations = df["duration"].to_numpy(np.float32)
+    events = df["event"].to_numpy(np.int32)
+    intervals = df["interval_number"].to_numpy(np.int32)
+    X_all = df[feat_cols].to_numpy(np.float32)
+
+    X_tr = X_all[tr]
+    X_va = X_all[va]
+    y_tr, m_tr = build_supervision(intervals[tr], events[tr], num_bins)
+    y_va, m_va = build_supervision(intervals[va], events[va], num_bins)
+
+    train_loader, val_loader = create_tensor_dataloaders(
+        X_tr,
+        y_tr,
+        m_tr,
+        X_va,
+        y_va,
+        m_va,
+        batch_size=int(config.get("batch_size", 128)),
+        num_workers=int(config.get("num_workers", 0)),
+    )
+
+    model = MultiTaskModel(
+        input_dim=X_tr.shape[1],
+        num_bins=num_bins,
+        hidden=int(config.get("hidden", 256)),
+        depth=int(config.get("depth", 2)),
+        dropout=float(config.get("dropout", 0.2)),
+    )
+
+    return {
+        "train_loader": train_loader,
+        "val_loader": val_loader,
+        "model": model,
+        "feature_names": feat_cols,
+        "feat2idx": feat2idx,
+        "num_bins": num_bins,
+        "dur_va": torch.tensor(durations[va]),
+        "evt_va": torch.tensor(events[va]),
+        "X_train": X_tr,
+        "X_val": X_va,
+        "mask_train": None,
+        "mask_val": None,
+    }
+
+
+def _align_modality_features(
+    base_ids: pd.Index,
+    df: pd.DataFrame,
+    id_col: str,
+    feature_cols: List[str],
+    prefix: Optional[str] = None,
+) -> Tuple[np.ndarray, np.ndarray, List[str]]:
+    if not feature_cols:
+        return np.zeros((len(base_ids), 0), dtype=np.float32), np.zeros((len(base_ids),), dtype=np.float32), []
+
+    sub = df[[id_col] + feature_cols].copy()
+    sub[id_col] = sub[id_col].astype(str)
+    for col in feature_cols:
+        sub[col] = pd.to_numeric(sub[col], errors="coerce")
+    sub = sub.set_index(id_col)
+    aligned = sub.reindex(base_ids)
+    mask = (~aligned.isna()).any(axis=1).astype(np.float32).to_numpy()
+    aligned = aligned.fillna(0.0)
+    arr = aligned.to_numpy(np.float32)
+
+    if prefix:
+        names = [f"{prefix}{c}" for c in feature_cols]
+    else:
+        names = list(feature_cols)
+    return arr, mask, names
+
+
+def _prepare_multimodal_inputs(data: pd.DataFrame, config: Dict, multimodal_cfg: Dict[str, Any]) -> Dict[str, Any]:
+    tab_info = multimodal_cfg.get("tabular", {}) or {}
+    tab_df = tab_info.get("data")
+    if tab_df is None:
+        tab_df = data.copy()
+    else:
+        tab_df = tab_df.copy()
+
+    id_col = tab_info.get("id_col") or multimodal_cfg.get("id_col") or config.get("id_col")
+    if not id_col:
+        raise ValueError("`id_col` must be provided for multimodal MySA training.")
+    if id_col not in tab_df.columns:
+        raise ValueError(f"Tabular modality must contain id column '{id_col}'.")
+
+    required_cols = {"duration", "event"}
+    if not required_cols.issubset(tab_df.columns):
+        missing = required_cols - set(tab_df.columns)
+        raise ValueError(f"Tabular modality missing required columns: {missing}")
+
+    tab_feat_cols = tab_info.get("feature_cols") or config.get("feature_cols") or []
+    tab_feat_cols = [c for c in tab_feat_cols if c not in {id_col, "duration", "event"}]
+    if not tab_feat_cols:
+        tab_feat_cols = infer_feature_cols(tab_df, exclude=[id_col, "duration", "event"])
+
+    n_bins = int(config.get("n_bins", 30))
+    df = make_intervals(tab_df, duration_col="duration", event_col="event", n_bins=n_bins, method="quantile")
+    num_bins = int(df["interval_number"].max())
+
+    base_ids = df[id_col].astype(str)
+    id_index = pd.Index(base_ids)
+
+    feature_arrays: List[np.ndarray] = []
+    feature_names: List[str] = []
+    modality_masks: List[np.ndarray] = []
+    modality_slices: List[Tuple[str, slice]] = []
+
+    start = 0
+
+    tab_arr, tab_mask, tab_names = _align_modality_features(id_index, df, id_col, tab_feat_cols)
+    if tab_arr.shape[1] > 0:
+        feature_arrays.append(tab_arr)
+        feature_names.extend(tab_names)
+        modality_masks.append(np.ones_like(tab_mask) if tab_mask.size == 0 else tab_mask)
+        modality_slices.append(("tabular", slice(start, start + tab_arr.shape[1])))
+        start += tab_arr.shape[1]
+
+    def _process_optional(name: str) -> None:
+        nonlocal start
+        info = multimodal_cfg.get(name)
+        if not info or info.get("data") is None:
+            return
+        df_mod = info["data"].copy()
+        mod_id = info.get("id_col") or id_col
+        if mod_id not in df_mod.columns:
+            raise ValueError(f"Modality '{name}' must contain id column '{mod_id}'.")
+        feat_cols = info.get("feature_cols")
+        if not feat_cols:
+            feat_cols = [c for c in df_mod.columns if c not in {mod_id, "duration", "event"}]
+        arr, mask, names = _align_modality_features(id_index, df_mod, mod_id, feat_cols, prefix=f"{name}:")
+        if arr.shape[1] == 0:
+            return
+        feature_arrays.append(arr)
+        feature_names.extend(names)
+        modality_masks.append(mask)
+        modality_slices.append((name, slice(start, start + arr.shape[1])))
+        start += arr.shape[1]
+
+    _process_optional("image")
+    _process_optional("sensor")
+
+    if not feature_arrays:
+        raise ValueError("No usable modality features found for multimodal MySA.")
+
+    X_all = np.concatenate(feature_arrays, axis=1)
+    mask_matrix = np.stack(modality_masks, axis=1) if modality_masks else None
+
+    durations = df["duration"].to_numpy(np.float32)
+    events = df["event"].to_numpy(np.int32)
+    intervals = df["interval_number"].to_numpy(np.int32)
+
+    N = len(df)
+    idx = np.arange(N)
+    rng = np.random.default_rng(42)
+    rng.shuffle(idx)
+    split = int(N * (1.0 - float(config.get("val_ratio", 0.2))))
+    tr, va = idx[:split], idx[split:]
+
+    X_tr = X_all[tr]
+    X_va = X_all[va]
+    mask_tr = mask_matrix[tr] if mask_matrix is not None else None
+    mask_va = mask_matrix[va] if mask_matrix is not None else None
+
+    y_tr, m_tr = build_supervision(intervals[tr], events[tr], num_bins)
+    y_va, m_va = build_supervision(intervals[va], events[va], num_bins)
+
+    train_loader, val_loader = create_tensor_dataloaders(
+        X_tr,
+        y_tr,
+        m_tr,
+        X_va,
+        y_va,
+        m_va,
+        batch_size=int(config.get("batch_size", 128)),
+        num_workers=int(config.get("num_workers", 0)),
+        mask_train=mask_tr,
+        mask_val=mask_va,
+    )
+
+    model = MultiModalMySAModel(
+        modality_slices,
+        num_bins=num_bins,
+        hidden=int(config.get("hidden", 256)),
+        depth=int(config.get("depth", 2)),
+        dropout=float(config.get("dropout", 0.2)),
+    )
+
+    feat2idx = {n: i for i, n in enumerate(feature_names)}
+
+    return {
+        "train_loader": train_loader,
+        "val_loader": val_loader,
+        "model": model,
+        "feature_names": feature_names,
+        "feat2idx": feat2idx,
+        "num_bins": num_bins,
+        "dur_va": torch.tensor(durations[va]),
+        "evt_va": torch.tensor(events[va]),
+        "X_train": X_tr,
+        "X_val": X_va,
+        "mask_train": mask_tr,
+        "mask_val": mask_va,
+    }
+
 
 def hazards_to_survival(h: np.ndarray) -> np.ndarray:
     """Convert hazards [N, T] to survival curves [N, T] via S_t = Π_k≤t (1 - h_k)."""
@@ -524,85 +943,25 @@ def topk_fi_table(phi_tbd: torch.Tensor, feature_names: List[str], k: int = 10) 
 
 # ------------------------------- Public API -----------------------------------
 
-def run_mysa(data: pd.DataFrame, config: Dict) -> Dict:
-    """
-    Train & evaluate MySA (full) model.
-    Required columns in `data`: 'duration', 'event' + feature columns.
-    config keys (examples):
-      - n_bins (30), val_ratio (0.2), batch_size (128), epochs (200)
-      - lr (1e-3), hidden (256), depth (2), dropout (0.2)
-      - lambda_smooth (0.01), lambda_expert (0.01)
-      - expert_features (list[str])           # backward compat (treated as relation >=mean, weight=1.0)
-      - expert_rules (dict)                    # rich rules; see expert_penalty docstring
-      - feature_cols (list[str])               # else infer from data
-      - ig_steps (20), latent_dim (16), extreme_dim (1)
-      - gen_epochs (200), gen_batch (256), gen_lr (1e-3), gen_alpha_dist (1.0)
-      - num_workers (0)
-    Returns: dict with metrics + survival curves + FI tables + per-time FI tensor path.
-    """
-    df = data.copy().reset_index(drop=True)
-    required_cols = {"duration", "event"}
-    assert required_cols.issubset(df.columns), f"Missing columns: {required_cols - set(df.columns)}"
 
-    # Time discretization
-    n_bins = int(config.get("n_bins", 30))
-    df = make_intervals(df, duration_col="duration", event_col="event", n_bins=n_bins, method="quantile")
-    num_bins = int(df["interval_number"].max())
+def _run_mysa_core(prepared: Dict[str, Any], config: Dict) -> Dict:
+    train_loader = prepared["train_loader"]
+    val_loader = prepared["val_loader"]
+    model = prepared["model"]
+    feature_names: List[str] = prepared["feature_names"]
+    feat2idx = prepared["feat2idx"]
+    dur_va: torch.Tensor = prepared["dur_va"]
+    evt_va: torch.Tensor = prepared["evt_va"]
+    X_tr = prepared["X_train"]
+    X_va = prepared["X_val"]
+    mask_tr = prepared.get("mask_train")
+    mask_va = prepared.get("mask_val")
 
-    # Features
-    feat_cols = config.get("feature_cols")
-    if not feat_cols:
-        feat_cols = infer_feature_cols(df, exclude=["duration", "event"])
-    feat2idx = {n: i for i, n in enumerate(feat_cols)}
-
-    # Split
-    val_ratio = float(config.get("val_ratio", 0.2))
-    N = len(df)
-    idx = np.arange(N)
-    rng = np.random.default_rng(42)
-    rng.shuffle(idx)
-    split = int(N * (1.0 - val_ratio))
-    tr, va = idx[:split], idx[split:]
-
-    durations = df["duration"].to_numpy(np.float32)
-    events    = df["event"].to_numpy(np.int32)
-    intervals = df["interval_number"].to_numpy(np.int32)
-    X_all     = df[feat_cols].to_numpy(np.float32)
-
-    X_tr = X_all[tr]; X_va = X_all[va]
-    dur_va = torch.tensor(durations[va])
-    evt_va = torch.tensor(events[va])
-
-    # Supervision
-    y_tr, m_tr = build_supervision(intervals[tr], events[tr], num_bins)
-    y_va, m_va = build_supervision(intervals[va], events[va], num_bins)
-
-    # Dataloaders
-    train_loader, val_loader = create_dataloaders(
-        X_tr, y_tr, m_tr, X_va, y_va, m_va,
-        batch_size=int(config.get("batch_size", 128)),
-        num_workers=int(config.get("num_workers", 0)),
-    )
-
-    # Model
-    model = MultiTaskModel(
-        input_dim=X_tr.shape[1],
-        num_bins=num_bins,
-        hidden=int(config.get("hidden", 256)),
-        depth=int(config.get("depth", 2)),
-        dropout=float(config.get("dropout", 0.2)),
-    )
-
-    # Expert rules: support legacy "expert_features"
     expert_rules = config.get("expert_rules")
     legacy_feats = config.get("expert_features") or []
     if expert_rules is None and legacy_feats:
         expert_rules = {"rules": [{"feature": f, "relation": ">=mean", "weight": 1.0} for f in legacy_feats]}
 
-    # Prepare generator reference tensors
-    X_train_ref = torch.tensor(X_tr)
-
-    # Trainer
     trainer = MySATrainer(
         model,
         lr=float(config.get("lr", 1e-3)),
@@ -611,29 +970,36 @@ def run_mysa(data: pd.DataFrame, config: Dict) -> Dict:
         lambda_expert=float(config.get("lambda_expert", 0.0)),
         expert_rules=expert_rules,
         feat2idx=feat2idx,
-        # TEXGI
         ig_steps=int(config.get("ig_steps", 20)),
         latent_dim=int(config.get("latent_dim", 16)),
         extreme_dim=int(config.get("extreme_dim", 1)),
-        # Generator
+        ig_batch_samples=int(config.get("ig_batch_samples", 64)),
+        ig_time_subsample=config.get("ig_time_subsample"),
         gen_epochs=int(config.get("gen_epochs", 200)),
         gen_batch=int(config.get("gen_batch", 256)),
         gen_lr=float(config.get("gen_lr", 1e-3)),
         gen_alpha_dist=float(config.get("gen_alpha_dist", 1.0)),
         ref_stats=None,
-        X_train_ref=X_train_ref,
+        X_train_ref=torch.tensor(X_tr, dtype=torch.float32),
+        modality_mask_ref=(torch.tensor(mask_tr, dtype=torch.float32) if mask_tr is not None else None),
     )
 
     best = {"val_cindex": 0.0, "epoch": -1}
     epochs = int(config.get("epochs", 200))
     for ep in range(1, epochs + 1):
-        lm, ls, le, steps = 0.0, 0.0, 0.0, 0
+        lm = ls = le = 0.0
+        steps = 0
         for batch in train_loader:
             lmm, lss, lee = trainer.step(batch)
-            lm += lmm; ls += lss; le += lee; steps += 1
-        lm /= max(steps, 1); ls /= max(steps, 1); le /= max(steps, 1)
+            lm += lmm
+            ls += lss
+            le += lee
+            steps += 1
+        steps = max(steps, 1)
+        lm /= steps
+        ls /= steps
+        le /= steps
 
-        # Validation
         val_c = trainer.evaluate_cindex(val_loader, dur_va, evt_va)
         trainer.sched.step(1.0 - val_c)
 
@@ -643,52 +1009,68 @@ def run_mysa(data: pd.DataFrame, config: Dict) -> Dict:
 
         print(f"[MySA] Ep{ep:03d}  NLL={lm:.4f}  Smooth={ls:.4f}  Expert={le:.4f}  | Val C-index={val_c:.4f}")
 
-    # Final pass on validation for hazards & TEXGI
     device = trainer.device
     model.eval()
     all_h = []
-    Xva_t = torch.tensor(X_va, device=device)
-    with torch.no_grad():
-        for Xb, yb, mb in val_loader:
-            hb = model(Xb.to(device)).cpu().numpy()
-            all_h.append(hb)
-    H_va = np.concatenate(all_h, axis=0)  # [Nv, T]
-    S_va = hazards_to_survival(H_va)       # [Nv, T]
-    surv_df = pd.DataFrame(S_va.T)         # time-major
+    for batch in val_loader:
+        Xb, _, _, maskb = trainer._unpack_batch(batch)
+        Xb = Xb.to(device, non_blocking=True)
+        maskb_t = maskb.to(device, non_blocking=True) if maskb is not None else None
+        hb = trainer._model_forward(Xb, maskb_t).cpu().numpy()
+        all_h.append(hb)
+    H_va = np.concatenate(all_h, axis=0)
+    S_va = hazards_to_survival(H_va)
+    surv_df = pd.DataFrame(S_va.T)
     surv_df.index.name = "time_bin"
 
-    # TEXGI on a validation subset for FI tables
+    Xva_t = torch.tensor(X_va, device=device)
+    mask_va_t = torch.tensor(mask_va, device=device) if mask_va is not None else None
     Ns = min(len(Xva_t), int(config.get("fi_samples", 256)))
     Xsub = Xva_t[:Ns]
+    forward_kwargs = {"modality_mask": mask_va_t[:Ns]} if mask_va_t is not None else None
     phi_val = texgi_time_series(
-        model.to(device), Xsub, trainer.G, trainer.ref_stats,
-        M=int(config.get("ig_steps", 20)),
-        latent_dim=int(config.get("latent_dim", 16)),
-        extreme_dim=int(config.get("extreme_dim", 1))
-    )  # [T, Ns, D]
+        model.to(device),
+        Xsub,
+        trainer.G,
+        trainer.ref_stats,
+        M=trainer.ig_steps,
+        latent_dim=trainer.latent_dim,
+        extreme_dim=trainer.extreme_dim,
+        forward_kwargs=forward_kwargs,
+    )
 
-    # Global FI and per-time FI
-    imp_abs, imp_dir = _aggregate_importance(phi_val)  # [D],[D]
+    imp_abs, imp_dir = _aggregate_importance(phi_val)
     fi_global = pd.DataFrame({
-        "feature": feat_cols,
+        "feature": feature_names,
         "importance": imp_abs.detach().cpu().numpy(),
-        "directional_mean": imp_dir.detach().cpu().numpy()
+        "directional_mean": imp_dir.detach().cpu().numpy(),
     }).sort_values("importance", ascending=False).reset_index(drop=True)
 
-    # Optionally return the raw tensor path to avoid huge JSON
-    # Save phi_val as torch file for later drill-down in UI
-    torch.save({"phi_val": phi_val.detach().cpu(), "feature_names": feat_cols}, "mysa_phi_val.pt")
+    torch.save({"phi_val": phi_val.detach().cpu(), "feature_names": feature_names}, "mysa_phi_val.pt")
 
     return {
         "C-index (Validation)": float(best["val_cindex"]),
-        "Num Bins": int(num_bins),
+        "Num Bins": int(prepared["num_bins"]),
         "Val Samples": int(len(X_va)),
         "Surv_Test": surv_df,
-        "Feature Importance": fi_global,          # table (abs importance + directional mean)
+        "Feature Importance": fi_global,
         "Expert Rules Used": expert_rules or {},
         "Best Epoch": int(best["epoch"]),
-        "Phi_Val_Path": "mysa_phi_val.pt",        # raw time-dependent attributions
+        "Phi_Val_Path": "mysa_phi_val.pt",
     }
+
+
+def run_mysa(data: pd.DataFrame, config: Dict) -> Dict:
+    """
+    Train & evaluate MySA (full) model.
+    Supports tabular and multimodal inputs (with `config["multimodal_sources"]`).
+    """
+    multimodal_cfg = config.get("multimodal_sources")
+    if multimodal_cfg:
+        prepared = _prepare_multimodal_inputs(data, config, multimodal_cfg)
+    else:
+        prepared = _prepare_tabular_inputs(data, config)
+    return _run_mysa_core(prepared, config)
 
 
 def run_texgisa(data: pd.DataFrame, config: Dict) -> Dict:

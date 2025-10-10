@@ -9,6 +9,7 @@ import streamlit as st
 import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
+from typing import Any, Dict, Optional
 
 from models import coxtime, deepsurv, deephit
 from models.mysa import run_mysa as run_texgisa
@@ -473,6 +474,57 @@ def _build_expert_rules_from_editor(df_rules):
             rule["min_mag"] = min_mag
         rules.append(rule)
     return {"rules": rules}
+
+
+def _build_multimodal_sources(config: dict) -> Optional[Dict[str, Any]]:
+    dm = st.session_state.get("data_manager") if "data_manager" in st.session_state else None
+    if dm is None:
+        return None
+
+    has_image = getattr(dm, "image_df", None) is not None
+    has_sensor = getattr(dm, "sensor_df", None) is not None
+    if not (has_image or has_sensor):
+        return None
+
+    id_col = st.session_state.get("mm_tab_id")
+    if not id_col:
+        return None
+
+    sources: Dict[str, Any] = {"id_col": id_col}
+
+    tab_df = getattr(dm, "tabular_df", None)
+    if tab_df is not None:
+        sources["tabular"] = {
+            "data": tab_df.copy(),
+            "id_col": id_col,
+            "feature_cols": config.get("feature_cols"),
+        }
+
+    if has_image:
+        img_df = dm.image_df
+        img_id = st.session_state.get("mm_img_id") or id_col
+        img_feats = [c for c in img_df.columns if c not in {img_id, "duration", "event"}]
+        sources["image"] = {
+            "data": img_df.copy(),
+            "id_col": img_id,
+            "feature_cols": img_feats,
+        }
+
+    if has_sensor:
+        sens_df = dm.sensor_df
+        sens_id = st.session_state.get("mm_sens_id") or id_col
+        sens_feats = [c for c in sens_df.columns if c not in {sens_id, "duration", "event"}]
+        sources["sensor"] = {
+            "data": sens_df.copy(),
+            "id_col": sens_id,
+            "feature_cols": sens_feats,
+        }
+
+    extra_modalities = [k for k in ("image", "sensor") if k in sources and sources[k]["feature_cols"]]
+    if not extra_modalities:
+        return None
+
+    return sources
 
 
 def _plot_survival_curves(surv_df: pd.DataFrame, max_lines: int = 5):
@@ -1030,11 +1082,25 @@ def show():
             )
 
 
+    mm_tab_id = None
+    if any(st.session_state.get(k) is not None for k in ["mm_image_df", "mm_sensor_df"]):
+        mm_tab_id = st.session_state.get("mm_tab_id")
+        if mm_tab_id and mm_tab_id in features:
+            features = [f for f in features if f != mm_tab_id]
+
+
     # Build working dataframe with required names
     try:
         # 先取用户选择的列并规范列名
-        base = data[features + [time_col, event_col]].copy()
+        base_cols = features + [time_col, event_col]
+        if mm_tab_id and mm_tab_id not in base_cols:
+            base_cols.append(mm_tab_id)
+        base = data[base_cols].copy()
         df = base.rename(columns={time_col: "duration", event_col: "event"})
+
+        id_series = None
+        if mm_tab_id and mm_tab_id in df.columns:
+            id_series = df[mm_tab_id].copy()
 
         # 事件列映射为 0/1（保持你原有的正类映射逻辑）
         df["event"] = _ensure_binary_event(
@@ -1110,7 +1176,12 @@ def show():
                 X = (X - mu) / sigma
 
             # 5) 组装回最终训练表（duration,event + 纯数值特征）
-            df = _pd.concat([df[["duration","event"]], X.astype("float32")], axis=1)
+            parts = []
+            if id_series is not None:
+                parts.append(id_series.to_frame(name=mm_tab_id))
+            parts.append(df[["duration", "event"]])
+            parts.append(X.astype("float32"))
+            df = _pd.concat(parts, axis=1)
 
             # 同步“特征列列表”供后续 config 使用
             features = list(X.columns)
@@ -1440,6 +1511,10 @@ def run_analysis(algo: str, df: pd.DataFrame, config: dict):
     elif "texgisa" in algo or "mysa" in algo:
         if run_texgisa is None:
             raise RuntimeError("TEXGISA not available. Please ensure models/mysa.py is present.")
-        return run_texgisa(df, config)
+        cfg = dict(config)
+        mm_sources = _build_multimodal_sources(cfg)
+        if mm_sources is not None:
+            cfg["multimodal_sources"] = mm_sources
+        return run_texgisa(df, cfg)
     else:
         raise ValueError(f"Unknown algorithm: {algo}")
