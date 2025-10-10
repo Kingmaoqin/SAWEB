@@ -9,6 +9,7 @@ import streamlit as st
 import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
+from typing import Any, Dict, Optional
 
 from models import coxtime, deepsurv, deephit
 from models.mysa import run_mysa as run_texgisa
@@ -475,6 +476,57 @@ def _build_expert_rules_from_editor(df_rules):
     return {"rules": rules}
 
 
+def _build_multimodal_sources(config: dict) -> Optional[Dict[str, Any]]:
+    dm = st.session_state.get("data_manager") if "data_manager" in st.session_state else None
+    if dm is None:
+        return None
+
+    has_image = getattr(dm, "image_df", None) is not None
+    has_sensor = getattr(dm, "sensor_df", None) is not None
+    if not (has_image or has_sensor):
+        return None
+
+    id_col = st.session_state.get("mm_tab_id")
+    if not id_col:
+        return None
+
+    sources: Dict[str, Any] = {"id_col": id_col}
+
+    tab_df = getattr(dm, "tabular_df", None)
+    if tab_df is not None:
+        sources["tabular"] = {
+            "data": tab_df.copy(),
+            "id_col": id_col,
+            "feature_cols": config.get("feature_cols"),
+        }
+
+    if has_image:
+        img_df = dm.image_df
+        img_id = st.session_state.get("mm_img_id") or id_col
+        img_feats = [c for c in img_df.columns if c not in {img_id, "duration", "event"}]
+        sources["image"] = {
+            "data": img_df.copy(),
+            "id_col": img_id,
+            "feature_cols": img_feats,
+        }
+
+    if has_sensor:
+        sens_df = dm.sensor_df
+        sens_id = st.session_state.get("mm_sens_id") or id_col
+        sens_feats = [c for c in sens_df.columns if c not in {sens_id, "duration", "event"}]
+        sources["sensor"] = {
+            "data": sens_df.copy(),
+            "id_col": sens_id,
+            "feature_cols": sens_feats,
+        }
+
+    extra_modalities = [k for k in ("image", "sensor") if k in sources and sources[k]["feature_cols"]]
+    if not extra_modalities:
+        return None
+
+    return sources
+
+
 def _plot_survival_curves(surv_df: pd.DataFrame, max_lines: int = 5):
     st.subheader("Predicted Survival Trajectories")
     fig, ax = plt.subplots(figsize=(10, 6))
@@ -618,6 +670,7 @@ def show():
         images_to_dataframe,
         build_manifest_from_zip,
         manifest_template_csv_bytes,
+        unzip_images_to_temp,
     )
 
     # === New: Image ZIP wizard (ResNet-50 -> Features) =============================
@@ -774,6 +827,7 @@ def show():
         build_manifest_from_sensors_zip,
         manifest_template_csv_bytes as manifest_template_csv_bytes_sensor,
         sensors_to_dataframe,
+        unzip_sensors_to_temp,
     )
 
     with st.expander("📈 Build Training Data from Sensor Data (Full-sequence Features)", expanded=False):
@@ -900,81 +954,252 @@ def show():
 
     # ===================== Multimodal data upload =============================
     with st.expander("🗂 Multimodal Data Upload", expanded=False):
-        tab_up = st.file_uploader("Tabular CSV", type=["csv"], key="mm_tabular")
-        img_up = st.file_uploader("Image CSV", type=["csv"], key="mm_image")
-        sens_up = st.file_uploader("Sensor CSV", type=["csv"], key="mm_sensor")
-
-        if tab_up is not None:
-            tab_df = pd.read_csv(tab_up)
-            st.session_state["mm_tabular_df"] = tab_df
-            st.dataframe(tab_df.head(), use_container_width=True)
-        if img_up is not None:
-            img_df = pd.read_csv(img_up)
-            st.session_state["mm_image_df"] = img_df
-            st.dataframe(img_df.head(), use_container_width=True)
-        if sens_up is not None:
-            sens_df = pd.read_csv(sens_up)
-            st.session_state["mm_sensor_df"] = sens_df
-            st.dataframe(sens_df.head(), use_container_width=True)
-
-        has_any = any(
-            k in st.session_state for k in ["mm_tabular_df", "mm_image_df", "mm_sensor_df"]
+        mode = st.radio(
+            "Choose upload mode",
+            ("Processed feature CSVs", "Raw assets (ZIP + manifest)"),
+            key="mm_upload_mode",
+            horizontal=True,
         )
-        if has_any:
-            st.markdown("### Field Alignment")
-            tab_id = img_id = sens_id = None
-            if "mm_tabular_df" in st.session_state:
-                tab_id = st.selectbox(
-                    "Tabular ID column",
-                    st.session_state["mm_tabular_df"].columns,
-                    key="mm_tab_id",
-                )
-            if "mm_image_df" in st.session_state:
-                img_id = st.selectbox(
-                    "Image ID column",
-                    st.session_state["mm_image_df"].columns,
-                    key="mm_img_id",
-                )
-            if "mm_sensor_df" in st.session_state:
-                sens_id = st.selectbox(
-                    "Sensor ID column",
-                    st.session_state["mm_sensor_df"].columns,
-                    key="mm_sens_id",
-                )
 
-            if st.button("Load Multimodal Data"):
-                combined = st.session_state.get("mm_tabular_df")
-                if combined is None:
-                    st.warning("Tabular data is required for alignment.")
-                else:
-                    if "mm_image_df" in st.session_state and img_id:
-                        combined = combined.merge(
-                            st.session_state["mm_image_df"],
-                            left_on=tab_id,
-                            right_on=img_id,
-                            how="left",
-                        )
-                    if "mm_sensor_df" in st.session_state and sens_id:
-                        combined = combined.merge(
-                            st.session_state["mm_sensor_df"],
-                            left_on=tab_id,
-                            right_on=sens_id,
-                            how="left",
-                        )
+        if mode == "Processed feature CSVs":
+            tab_up = st.file_uploader("Tabular CSV", type=["csv"], key="mm_tabular")
+            img_up = st.file_uploader("Image CSV", type=["csv"], key="mm_image")
+            sens_up = st.file_uploader("Sensor CSV", type=["csv"], key="mm_sensor")
 
-                    st.session_state["clinical_data"] = combined
-                    if "data_manager" in st.session_state:
-                        dm = st.session_state.data_manager
-                        dm.load_multimodal_data(
-                            tabular_df=st.session_state.get("mm_tabular_df"),
-                            image_df=st.session_state.get("mm_image_df"),
-                            sensor_df=st.session_state.get("mm_sensor_df"),
-                        )
-                        dm.load_data(combined, "multimodal_combined")
-                    st.success(
-                        f"✅ Loaded multimodal data ({combined.shape[0]} rows × {combined.shape[1]} columns)"
+            if tab_up is not None:
+                tab_df = pd.read_csv(tab_up)
+                st.session_state["mm_tabular_df"] = tab_df
+                st.dataframe(tab_df.head(), use_container_width=True)
+            if img_up is not None:
+                img_df = pd.read_csv(img_up)
+                st.session_state["mm_image_df"] = img_df
+                st.dataframe(img_df.head(), use_container_width=True)
+            if sens_up is not None:
+                sens_df = pd.read_csv(sens_up)
+                st.session_state["mm_sensor_df"] = sens_df
+                st.dataframe(sens_df.head(), use_container_width=True)
+
+            has_any = any(
+                st.session_state.get(k) is not None for k in ["mm_tabular_df", "mm_image_df", "mm_sensor_df"]
+            )
+            if has_any:
+                st.markdown("### Field Alignment")
+                tab_id = img_id = sens_id = None
+                if "mm_tabular_df" in st.session_state:
+                    tab_id = st.selectbox(
+                        "Tabular ID column",
+                        st.session_state["mm_tabular_df"].columns,
+                        key="mm_tab_id",
                     )
-                    st.dataframe(combined.head(), use_container_width=True)
+                if "mm_image_df" in st.session_state:
+                    img_id = st.selectbox(
+                        "Image ID column",
+                        st.session_state["mm_image_df"].columns,
+                        key="mm_img_id",
+                    )
+                if "mm_sensor_df" in st.session_state:
+                    sens_id = st.selectbox(
+                        "Sensor ID column",
+                        st.session_state["mm_sensor_df"].columns,
+                        key="mm_sens_id",
+                    )
+
+                if st.button("Load Multimodal Data", key="mm_load_processed"):
+                    combined = st.session_state.get("mm_tabular_df")
+                    if combined is None:
+                        st.warning("Tabular data is required for alignment.")
+                    else:
+                        if "mm_image_df" in st.session_state and img_id:
+                            combined = combined.merge(
+                                st.session_state["mm_image_df"],
+                                left_on=tab_id,
+                                right_on=img_id,
+                                how="left",
+                            )
+                        if "mm_sensor_df" in st.session_state and sens_id:
+                            combined = combined.merge(
+                                st.session_state["mm_sensor_df"],
+                                left_on=tab_id,
+                                right_on=sens_id,
+                                how="left",
+                            )
+
+                        st.session_state["clinical_data"] = combined
+                        if "data_manager" in st.session_state:
+                            dm = st.session_state.data_manager
+                            dm.load_multimodal_data(
+                                tabular_df=st.session_state.get("mm_tabular_df"),
+                                image_df=st.session_state.get("mm_image_df"),
+                                sensor_df=st.session_state.get("mm_sensor_df"),
+                            )
+                            dm.load_data(combined, "multimodal_combined")
+                        st.success(
+                            f"✅ Loaded multimodal data ({combined.shape[0]} rows × {combined.shape[1]} columns)"
+                        )
+                        st.dataframe(combined.head(), use_container_width=True)
+        else:
+            st.markdown(
+                "Upload the raw assets (ZIP + manifest) exported by the simulator or your own pipeline."
+            )
+            tab_up = st.file_uploader("Tabular CSV (required)", type=["csv"], key="mm_raw_tabular")
+            id_col = st.text_input(
+                "Common ID column for alignment",
+                value=st.session_state.get("mm_raw_id_col", "id"),
+                key="mm_raw_id_col",
+            )
+            img_id_col = st.text_input(
+                "Image manifest ID column",
+                value=st.session_state.get("mm_raw_img_id_col", "id"),
+                key="mm_raw_img_id_col",
+            )
+            sens_id_col = st.text_input(
+                "Sensor manifest ID column",
+                value=st.session_state.get("mm_raw_sens_id_col", "id"),
+                key="mm_raw_sens_id_col",
+            )
+
+            c1, c2 = st.columns(2)
+            with c1:
+                img_zip = st.file_uploader("Image ZIP", type=["zip"], key="mm_raw_img_zip")
+                img_manifest = st.file_uploader("Image manifest CSV", type=["csv"], key="mm_raw_img_manifest")
+                img_bs = st.number_input(
+                    "Image batch size",
+                    min_value=8,
+                    max_value=256,
+                    value=int(st.session_state.get("mm_raw_img_bs", 32)),
+                    step=8,
+                    key="mm_raw_img_bs",
+                )
+            with c2:
+                sens_zip = st.file_uploader("Sensor ZIP", type=["zip"], key="mm_raw_sensor_zip")
+                sens_manifest = st.file_uploader(
+                    "Sensor manifest CSV",
+                    type=["csv"],
+                    key="mm_raw_sensor_manifest",
+                )
+                sens_resample = st.number_input(
+                    "Sensor resample Hz (0 = no resample)",
+                    min_value=0,
+                    max_value=256,
+                    value=int(st.session_state.get("mm_raw_sensor_resample", 0)),
+                    step=1,
+                    key="mm_raw_sensor_resample",
+                )
+                sens_max_rows = st.number_input(
+                    "Max rows per sensor file (0 = all)",
+                    min_value=0,
+                    max_value=2_000_000,
+                    value=int(st.session_state.get("mm_raw_sensor_maxrows", 0)),
+                    step=1000,
+                    key="mm_raw_sensor_maxrows",
+                )
+
+            if st.button("Process Raw Multimodal Assets", key="mm_process_raw"):
+                if tab_up is None:
+                    st.warning("Please upload the tabular CSV before processing raw assets.")
+                    st.stop()
+
+                try:
+                    tab_df = pd.read_csv(tab_up)
+                    tab_df.columns = [str(c).strip() for c in tab_df.columns]
+                except Exception as exc:
+                    st.error(f"Failed to read tabular CSV: {exc}")
+                    st.stop()
+
+                if id_col not in tab_df.columns:
+                    st.error(f"Tabular CSV must contain the ID column '{id_col}'.")
+                    st.stop()
+
+                tab_df[id_col] = tab_df[id_col].astype(str)
+
+                st.session_state["mm_image_df"] = None
+                st.session_state["mm_sensor_df"] = None
+
+                image_df = None
+                if img_zip is not None and img_manifest is not None:
+                    try:
+                        img_manifest_df = pd.read_csv(img_manifest)
+                        img_manifest_df.columns = [str(c).strip() for c in img_manifest_df.columns]
+                        if img_id_col not in img_manifest_df.columns:
+                            raise KeyError(f"Image manifest is missing column '{img_id_col}'.")
+                        with st.spinner("Extracting image embeddings..."):
+                            img_root = unzip_images_to_temp(img_zip)
+                            image_df = images_to_dataframe(
+                                img_manifest_df,
+                                image_root=img_root,
+                                id_col=img_id_col,
+                                batch_size=int(img_bs),
+                                num_workers=0,
+                            )
+                        if img_id_col != id_col and image_df is not None and img_id_col in image_df.columns:
+                            image_df = image_df.rename(columns={img_id_col: id_col})
+                        if image_df is not None and id_col in image_df.columns:
+                            image_df[id_col] = image_df[id_col].astype(str)
+                        st.session_state["mm_image_df"] = image_df
+                        st.dataframe(image_df.head(), use_container_width=True)
+                    except Exception as exc:
+                        st.error(f"Image processing failed: {exc}")
+                        image_df = None
+
+                sensor_df = None
+                if sens_zip is not None and sens_manifest is not None:
+                    try:
+                        sens_manifest_df = pd.read_csv(sens_manifest)
+                        sens_manifest_df.columns = [str(c).strip() for c in sens_manifest_df.columns]
+                        if sens_id_col not in sens_manifest_df.columns:
+                            raise KeyError(f"Sensor manifest is missing column '{sens_id_col}'.")
+                        with st.spinner("Extracting sensor features..."):
+                            sens_root = unzip_sensors_to_temp(sens_zip)
+                            sensor_df = sensors_to_dataframe(
+                                sens_manifest_df,
+                                sensor_root=sens_root,
+                                id_col=sens_id_col,
+                                resample_hz=float(sens_resample),
+                                max_rows_per_file=int(sens_max_rows),
+                            )
+                        if sens_id_col != id_col and sensor_df is not None and sens_id_col in sensor_df.columns:
+                            sensor_df = sensor_df.rename(columns={sens_id_col: id_col})
+                        if sensor_df is not None and id_col in sensor_df.columns:
+                            sensor_df[id_col] = sensor_df[id_col].astype(str)
+                        st.session_state["mm_sensor_df"] = sensor_df
+                        st.dataframe(sensor_df.head(), use_container_width=True)
+                    except Exception as exc:
+                        st.error(f"Sensor processing failed: {exc}")
+                        sensor_df = None
+
+                st.session_state["mm_tabular_df"] = tab_df
+
+                combined = tab_df.copy()
+                if image_df is not None and id_col in image_df.columns:
+                    combined = combined.merge(image_df, on=id_col, how="left")
+                if sensor_df is not None and id_col in sensor_df.columns:
+                    combined = combined.merge(sensor_df, on=id_col, how="left")
+
+                combined_display = combined
+                if id_col in combined_display.columns:
+                    combined_display = combined_display.drop(columns=[id_col])
+
+                st.session_state["clinical_data"] = combined_display
+                st.session_state["mm_tab_id"] = id_col
+
+                if "data_manager" in st.session_state:
+                    dm = st.session_state.data_manager
+                    dm.load_multimodal_data(
+                        tabular_df=tab_df,
+                        image_df=image_df,
+                        sensor_df=sensor_df,
+                    )
+                    dm.load_data(combined_display, "multimodal_combined_raw")
+
+                st.success(
+                    f"✅ Processed raw multimodal assets ({combined_display.shape[0]} rows × {combined_display.shape[1]} columns)"
+                )
+                if id_col in combined.columns:
+                    st.caption(
+                        "ℹ️ Identifier column dropped from the working table to avoid feeding string IDs into the model. "
+                        "The original ID is still preserved internally for modality alignment."
+                    )
+                st.dataframe(combined_display.head(), use_container_width=True)
 
     # ===================== 1) Data upload & preview ===========================
     with st.expander("📘 Step-by-Step Guide for Tabular Data", expanded=False):
@@ -1030,11 +1255,25 @@ def show():
             )
 
 
+    mm_tab_id = None
+    if any(st.session_state.get(k) is not None for k in ["mm_image_df", "mm_sensor_df"]):
+        mm_tab_id = st.session_state.get("mm_tab_id")
+        if mm_tab_id and mm_tab_id in features:
+            features = [f for f in features if f != mm_tab_id]
+
+
     # Build working dataframe with required names
     try:
         # 先取用户选择的列并规范列名
-        base = data[features + [time_col, event_col]].copy()
+        base_cols = features + [time_col, event_col]
+        if mm_tab_id and mm_tab_id not in base_cols:
+            base_cols.append(mm_tab_id)
+        base = data[base_cols].copy()
         df = base.rename(columns={time_col: "duration", event_col: "event"})
+
+        id_series = None
+        if mm_tab_id and mm_tab_id in df.columns:
+            id_series = df[mm_tab_id].copy()
 
         # 事件列映射为 0/1（保持你原有的正类映射逻辑）
         df["event"] = _ensure_binary_event(
@@ -1110,7 +1349,12 @@ def show():
                 X = (X - mu) / sigma
 
             # 5) 组装回最终训练表（duration,event + 纯数值特征）
-            df = _pd.concat([df[["duration","event"]], X.astype("float32")], axis=1)
+            parts = []
+            if id_series is not None:
+                parts.append(id_series.to_frame(name=mm_tab_id))
+            parts.append(df[["duration", "event"]])
+            parts.append(X.astype("float32"))
+            df = _pd.concat(parts, axis=1)
 
             # 同步“特征列列表”供后续 config 使用
             features = list(X.columns)
@@ -1440,6 +1684,10 @@ def run_analysis(algo: str, df: pd.DataFrame, config: dict):
     elif "texgisa" in algo or "mysa" in algo:
         if run_texgisa is None:
             raise RuntimeError("TEXGISA not available. Please ensure models/mysa.py is present.")
-        return run_texgisa(df, config)
+        cfg = dict(config)
+        mm_sources = _build_multimodal_sources(cfg)
+        if mm_sources is not None:
+            cfg["multimodal_sources"] = mm_sources
+        return run_texgisa(df, cfg)
     else:
         raise ValueError(f"Unknown algorithm: {algo}")

@@ -47,18 +47,23 @@ class DataManager:
         self.image_df = image_df
         self.sensor_df = sensor_df
 
-        # Preserve backward compatibility: expose the first available DataFrame
-        # as ``_data`` so that existing calls to ``get_data`` keep working.
-        primary = tabular_df or image_df or sensor_df
-        if primary is not None:
-            self._data = primary
+        # Preserve backward compatibility: expose the first available
+        # DataFrame as ``_data`` so that existing calls to ``get_data`` keep
+        # working.  Explicitly test against ``None`` to avoid pandas truth
+        # value errors.
+        for candidate in (tabular_df, image_df, sensor_df):
+            if candidate is not None:
+                self._data = candidate
+                break
             # ``load_multimodal_data`` may not have a meaningful file name, so
             # we keep the previous one unless a new dataset is provided via
             # ``load_data``.
 
     def get_data_summary(self) -> dict:
         """Returns a summary of the loaded data."""
-        if self._data is None and not any([self.tabular_df, self.image_df, self.sensor_df]):
+        if self._data is None and not any(
+            df is not None for df in (self.tabular_df, self.image_df, self.sensor_df)
+        ):
             return {"error": "No data has been loaded. Please upload a dataset on the 'Run Models' page."}
 
         summary = {}
