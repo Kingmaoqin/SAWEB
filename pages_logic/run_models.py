@@ -1261,18 +1261,46 @@ def show():
         if mm_tab_id and mm_tab_id in features:
             features = [f for f in features if f != mm_tab_id]
 
+    available_cols = set(data.columns)
+
+    missing_features = [f for f in features if f not in available_cols]
+    if missing_features:
+        st.warning(
+            "The following selected feature columns are no longer present in the current dataset and will be ignored: "
+            + ", ".join(missing_features)
+        )
+        features = [f for f in features if f in available_cols]
+        st.session_state["features"] = features
+
+    if time_col not in available_cols or event_col not in available_cols:
+        st.error(
+            "Selected duration/event columns are not available in the working table. Please re-select columns from the "
+            "dropdowns above."
+        )
+        return
+
+    mm_tab_id_present = bool(mm_tab_id and mm_tab_id in available_cols)
+
 
     # Build working dataframe with required names
     try:
         # 先取用户选择的列并规范列名
         base_cols = features + [time_col, event_col]
-        if mm_tab_id and mm_tab_id not in base_cols:
+        if mm_tab_id_present and mm_tab_id not in base_cols:
             base_cols.append(mm_tab_id)
+
+        missing_base = [c for c in base_cols if c not in available_cols]
+        if missing_base:
+            st.error(
+                "The following required columns are missing from the dataset: " + ", ".join(missing_base)
+            )
+            return
+
         base = data[base_cols].copy()
         df = base.rename(columns={time_col: "duration", event_col: "event"})
 
         id_series = None
-        if mm_tab_id and mm_tab_id in df.columns:
+        if mm_tab_id_present and mm_tab_id in df.columns:
             id_series = df[mm_tab_id].copy()
 
         # 事件列映射为 0/1（保持你原有的正类映射逻辑）
