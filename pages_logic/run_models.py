@@ -1175,7 +1175,11 @@ def show():
                 if sensor_df is not None and id_col in sensor_df.columns:
                     combined = combined.merge(sensor_df, on=id_col, how="left")
 
-                st.session_state["clinical_data"] = combined
+                combined_display = combined
+                if id_col in combined_display.columns:
+                    combined_display = combined_display.drop(columns=[id_col])
+
+                st.session_state["clinical_data"] = combined_display
                 st.session_state["mm_tab_id"] = id_col
 
                 if "data_manager" in st.session_state:
@@ -1185,12 +1189,17 @@ def show():
                         image_df=image_df,
                         sensor_df=sensor_df,
                     )
-                    dm.load_data(combined, "multimodal_combined_raw")
+                    dm.load_data(combined_display, "multimodal_combined_raw")
 
                 st.success(
-                    f"✅ Processed raw multimodal assets ({combined.shape[0]} rows × {combined.shape[1]} columns)"
+                    f"✅ Processed raw multimodal assets ({combined_display.shape[0]} rows × {combined_display.shape[1]} columns)"
                 )
-                st.dataframe(combined.head(), use_container_width=True)
+                if id_col in combined.columns:
+                    st.caption(
+                        "ℹ️ Identifier column dropped from the working table to avoid feeding string IDs into the model. "
+                        "The original ID is still preserved internally for modality alignment."
+                    )
+                st.dataframe(combined_display.head(), use_container_width=True)
 
     # ===================== 1) Data upload & preview ===========================
     with st.expander("📘 Step-by-Step Guide for Tabular Data", expanded=False):
