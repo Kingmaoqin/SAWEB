@@ -364,6 +364,11 @@ def sensors_to_dataframe(
         feat_df = feat_df.drop(columns=drop_domfreq)
 
     feat_df = feat_df.reindex(sorted(feat_df.columns), axis=1).fillna(0.0)
+    feat_df = feat_df.astype(np.float32)
+    feat_df.columns = [
+        c if str(c).startswith("sens_feat_") else f"sens_feat_{c}"
+        for c in feat_df.columns
+    ]
 
     # Label table aligned with successfully processed samples
     de = pd.DataFrame({
@@ -371,7 +376,7 @@ def sensors_to_dataframe(
         "event":    pd.Series(evt_list, dtype="int32"),
     })
     if id_list is not None:
-        de.insert(0, id_col, pd.Series(id_list))
+        de.insert(0, id_col, pd.Series([str(v) for v in id_list]))
 
     # Safety check
     if len(de) != len(feat_df):
@@ -382,15 +387,20 @@ def sensors_to_dataframe(
 
     # Optional global z-score normalisation (can be moved to trainer later)
     DO_GLOBAL_Z = True
-    if DO_GLOBAL_Z:
+    if DO_GLOBAL_Z and not feat_df.empty:
         mu = feat_df.mean(axis=0)
         sigma = feat_df.std(axis=0).replace(0.0, 1.0)
         feat_df = (feat_df - mu) / sigma
 
     out = pd.concat([de, feat_df.astype(np.float32)], axis=1)
-    # Apply a consistent prefix
-    out.columns = ["duration","event"] + [f"sens_feat_{c}" if not str(c).startswith("sens_feat_") else c
-                                        for c in out.columns[2:]]
+
+    if id_col and id_col in out.columns:
+        if out[id_col].duplicated().any():
+            agg_map = {"duration": "first", "event": "first"}
+            feat_cols = [c for c in out.columns if c not in {id_col, "duration", "event"}]
+            agg_map.update({c: "mean" for c in feat_cols})
+            out = out.groupby(id_col, as_index=False).agg(agg_map)
+
     return out
 
 

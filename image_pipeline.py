@@ -225,7 +225,7 @@ def images_to_dataframe(
 
     # 3) Preserve the ID column first when available for cross-modality joins
     if id_col and id_col in kept.columns:
-        df.insert(0, id_col, kept[id_col].to_numpy())
+        df.insert(0, id_col, kept[id_col].astype(str).to_numpy())
 
     # 4) Retain additional numeric columns from the manifest
     extra_cols = [c for c in kept.columns if c not in {image_col, duration_col, event_col, "_orig_idx"}]
@@ -239,6 +239,19 @@ def images_to_dataframe(
             except Exception:
                 # Skip non-numeric columns to avoid breaking downstream code
                 pass
+
+    # 5) Ensure one row per identifier so downstream alignment can reindex safely
+    if id_col and id_col in df.columns:
+        if df[id_col].duplicated().any():
+            # Keep the first duration/event entry (should be identical across duplicates)
+            agg_map = {}
+            if "duration" in df.columns:
+                agg_map["duration"] = "first"
+            if "event" in df.columns:
+                agg_map["event"] = "first"
+            feat_cols = [c for c in df.columns if c not in {id_col, "duration", "event"}]
+            agg_map.update({c: "mean" for c in feat_cols})
+            df = df.groupby(id_col, as_index=False).agg(agg_map)
 
     return df
 
