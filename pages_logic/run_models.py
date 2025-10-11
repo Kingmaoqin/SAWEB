@@ -494,10 +494,35 @@ def _build_multimodal_sources(config: dict) -> Optional[Dict[str, Any]]:
 
     tab_df = getattr(dm, "tabular_df", None)
     if tab_df is not None:
+        cfg_feats = config.get("feature_cols")
+        if isinstance(cfg_feats, str):
+            cfg_feats = [cfg_feats]
+        elif cfg_feats is not None:
+            try:
+                cfg_feats = list(cfg_feats)
+            except TypeError:
+                cfg_feats = None
+
+        exclude_cols = {id_col}
+        time_col = config.get("time_col")
+        event_col = config.get("event_col")
+        if isinstance(time_col, str):
+            exclude_cols.add(time_col)
+        if isinstance(event_col, str):
+            exclude_cols.add(event_col)
+
+        if cfg_feats is None:
+            tab_feats = [c for c in tab_df.columns if c not in exclude_cols]
+        else:
+            tab_cols = set(tab_df.columns)
+            tab_feats = [c for c in cfg_feats if c in tab_cols and c not in exclude_cols]
+            if not tab_feats:
+                tab_feats = [c for c in tab_df.columns if c not in exclude_cols]
+
         sources["tabular"] = {
             "data": tab_df.copy(),
             "id_col": id_col,
-            "feature_cols": config.get("feature_cols"),
+            "feature_cols": tab_feats,
         }
 
     if has_image:
@@ -520,7 +545,22 @@ def _build_multimodal_sources(config: dict) -> Optional[Dict[str, Any]]:
             "feature_cols": sens_feats,
         }
 
-    extra_modalities = [k for k in ("image", "sensor") if k in sources and sources[k]["feature_cols"]]
+    def _has_features(info: Any) -> bool:
+        """Return True when a modality descriptor contains non-empty features."""
+        if not isinstance(info, dict):
+            return False
+        cols = info.get("feature_cols")
+        if cols is None:
+            return False
+        if isinstance(cols, (list, tuple)):
+            return len(cols) > 0
+        # Support pandas Index / Series etc.
+        try:
+            return bool(len(cols))
+        except TypeError:
+            return False
+
+    extra_modalities = [k for k in ("image", "sensor") if _has_features(sources.get(k))]
     if not extra_modalities:
         return None
 
@@ -1169,11 +1209,31 @@ def show():
 
                 st.session_state["mm_tabular_df"] = tab_df
 
+                def _prep_for_merge(df):
+                    if df is None or id_col not in df.columns:
+                        return None
+                    tmp = df.copy()
+                    tmp[id_col] = tmp[id_col].astype(str)
+                    drop_cols = [c for c in ("duration", "event") if c in tmp.columns]
+                    if drop_cols:
+                        tmp = tmp.drop(columns=drop_cols)
+                    feat_cols = [c for c in tmp.columns if c != id_col]
+                    if not feat_cols:
+                        return None
+                    for col in feat_cols:
+                        tmp[col] = pd.to_numeric(tmp[col], errors="coerce")
+                    if tmp[id_col].duplicated().any():
+                        agg = tmp.groupby(id_col, as_index=False)[feat_cols].mean()
+                        tmp = agg
+                    return tmp
+
                 combined = tab_df.copy()
-                if image_df is not None and id_col in image_df.columns:
-                    combined = combined.merge(image_df, on=id_col, how="left")
-                if sensor_df is not None and id_col in sensor_df.columns:
-                    combined = combined.merge(sensor_df, on=id_col, how="left")
+                img_merge = _prep_for_merge(image_df)
+                if img_merge is not None:
+                    combined = combined.merge(img_merge, on=id_col, how="left")
+                sens_merge = _prep_for_merge(sensor_df)
+                if sens_merge is not None:
+                    combined = combined.merge(sens_merge, on=id_col, how="left")
 
                 combined_display = combined
                 if id_col in combined_display.columns:

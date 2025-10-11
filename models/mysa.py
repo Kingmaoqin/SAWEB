@@ -1012,12 +1012,13 @@ def _run_mysa_core(prepared: Dict[str, Any], config: Dict) -> Dict:
     device = trainer.device
     model.eval()
     all_h = []
-    for batch in val_loader:
-        Xb, _, _, maskb = trainer._unpack_batch(batch)
-        Xb = Xb.to(device, non_blocking=True)
-        maskb_t = maskb.to(device, non_blocking=True) if maskb is not None else None
-        hb = trainer._model_forward(Xb, maskb_t).cpu().numpy()
-        all_h.append(hb)
+    with torch.no_grad():
+        for batch in val_loader:
+            Xb, _, _, maskb = trainer._unpack_batch(batch)
+            Xb = Xb.to(device, non_blocking=True)
+            maskb_t = maskb.to(device, non_blocking=True) if maskb is not None else None
+            hb = trainer._model_forward(Xb, maskb_t).detach().cpu().numpy()
+            all_h.append(hb)
     H_va = np.concatenate(all_h, axis=0)
     S_va = hazards_to_survival(H_va)
     surv_df = pd.DataFrame(S_va.T)
