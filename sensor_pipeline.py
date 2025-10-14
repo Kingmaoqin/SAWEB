@@ -12,12 +12,20 @@
 #   - Robust per-channel stats + simple spectral features
 # ------------------------------------------------------------
 from __future__ import annotations
-import os, io, zipfile, tempfile, math, re
-from typing import Optional, List, Tuple, Dict
+
+import io
+import math
+import os
+import re
+import tempfile
+import zipfile
+from typing import Dict, Iterable, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-# 可选：SciPy 不强制要求，频域我们用 numpy 即可
+from utils.identifiers import canonicalize_identifier
+
+# Optional SciPy import (not strictly required; NumPy covers the basics)
 # import scipy.signal as sps
 
 NUMERIC_DTYPES = ("int8","int16","int32","int64","float16","float32","float64")
@@ -30,15 +38,15 @@ def unzip_sensors_to_temp(uploaded_zip_file) -> str:
         zf.extractall(tmp_dir)
     return tmp_dir
 
-def scan_sensor_files(root: str, exts={'.csv', '.parquet', '.txt'}):
+def scan_sensor_files(root: str, exts: Iterable[str] = (".csv", ".parquet", ".txt")):
     files = []
-    for d,_,fns in os.walk(root):
+    for d, _, fns in os.walk(root):
         for fn in fns:
             ext = os.path.splitext(fn)[1].lower()
             if ext in exts:
                 abspath = os.path.join(d, fn)
                 rel = os.path.relpath(abspath, root)
-                files.append((rel, abspath))
+                files.append((rel.replace("\\", "/"), abspath))
     files.sort()
     return files
 
@@ -58,10 +66,10 @@ def _read_one_table(path: str, time_cols=('timestamp','time','datetime','date','
             kw["nrows"] = int(max_rows)
         df = pd.read_csv(path, **kw)
 
-    # 标准化列名
+    # Normalise column names
     df.columns = [str(c).strip() for c in df.columns]
 
-    # 自动识别时间戳列（优先匹配常见命名）
+    # Try to automatically locate a timestamp column (prefer common names)
     ts_col = None
     for c in df.columns:
         lc = c.lower()
@@ -69,7 +77,7 @@ def _read_one_table(path: str, time_cols=('timestamp','time','datetime','date','
             ts_col = c
             break
     if ts_col is None:
-        # 备选：第一列若是可parse的时间，也尝试
+        # Fallback: attempt to parse the first column as datetime
         c0 = df.columns[0]
         try:
             pd.to_datetime(df[c0])
@@ -81,7 +89,7 @@ def _read_one_table(path: str, time_cols=('timestamp','time','datetime','date','
         try:
             df[ts_col] = pd.to_datetime(df[ts_col])
         except Exception:
-            ts_col = None  # 解析失败就当无时间戳
+            ts_col = None  # Parsing failed; treat as no timestamp
 
     return df, ts_col
 
@@ -107,10 +115,10 @@ def _basic_stats(x: np.ndarray) -> Dict[str, float]:
     out["iqr"]    = out["p75"] - out["p25"]
     out["rms"]    = float(np.sqrt(np.mean(v**2)))
     out["absmean"]= float(np.mean(np.abs(v)))
-    # 简易零交叉率
+    # Simple zero-crossing rate
     s = np.sign(v - np.mean(v))
     out["zcr"]    = float(np.mean(s[1:] * s[:-1] < 0.0))
-    # 偏度/峰度（nan安全）
+    # Skewness/kurtosis with NaN safety
     if v.size >= 3:
         m3 = np.mean((v - out["mean"])**3)
         m2 = np.mean((v - out["mean"])**2)
@@ -120,7 +128,7 @@ def _basic_stats(x: np.ndarray) -> Dict[str, float]:
     else:
         out["skew"] = 0.0
         out["kurt"] = 0.0
-    # 能量（均方）
+    # Signal energy (mean square)
     out["energy"] = float(np.mean(v**2))
     return out
 
@@ -135,10 +143,10 @@ def _spectral_feats(x: np.ndarray, fs: Optional[float]) -> Dict[str, float]:
         return out
     Pn = P / P.sum()
     out["spec_entropy"] = float(-np.sum(Pn * np.log(Pn + 1e-12)))
-    # 主频相对能量（无量纲）
+    # Dominant frequency relative energy (unitless)
     k = int(np.argmax(P))
     out["dom_power"] = float(P[k] / (P.sum() + 1e-12))
-    # 只有在已知采样率时，才输出 dom_freq_hz，避免产生全 0 常数列
+    # Only emit dom_freq_hz when fs is known to avoid constant zero columns
     if fs and fs > 0:
         freqs = np.fft.rfftfreq(v.size, d=1.0/fs)
         out["dom_freq_hz"] = float(freqs[k])
@@ -146,26 +154,23 @@ def _spectral_feats(x: np.ndarray, fs: Optional[float]) -> Dict[str, float]:
 
 
 def _maybe_resample(df: pd.DataFrame, ts_col: Optional[str], target_hz: float) -> Tuple[pd.DataFrame, Optional[float]]:
-    """若提供时间戳且 target_hz>0，则重采样到等间隔；否则按原样返回，并尝试估计 fs。"""
+    """Resample to a regular grid when target_hz>0; otherwise estimate fs if possible."""
     if ts_col is None:
         return df, None
     df = df.sort_values(ts_col)
     if target_hz and target_hz > 0:
-        # 统一到 target_hz
+        # Resample to target_hz using mean + interpolation
         df = df.set_index(ts_col).resample(pd.Timedelta(seconds=1.0/target_hz)).mean().interpolate().reset_index()
         fs = float(target_hz)
     else:
-        # 粗估采样率（中位数间隔）
+        # Estimate sampling rate from the median timestamp gap
         dt = df[ts_col].diff().dt.total_seconds().to_numpy()
         dt = dt[np.isfinite(dt) & (dt>0)]
         fs = float(1.0/np.median(dt)) if dt.size>0 else None
     return df, fs
 
 def _group_xyz_columns(cols: List[str]) -> List[Tuple[str,str,str]]:
-    """
-    检测 *_x,*_y,*_z 这样的三轴组，返回组列表。
-    例如 acc_x,acc_y,acc_z -> ('acc_x','acc_y','acc_z')
-    """
+    """Detect *_x, *_y, *_z channel triplets (e.g. accel axes)."""
     out = []
     s = set(cols)
     for c in cols:
@@ -245,17 +250,17 @@ def fullsequence_features(
 
     feats: Dict[str, float] = {}
 
-    # 每通道：整段统计 + 频域 + 趋势 + 尾段
+    # Per-channel features: global stats + spectral + trend + tail windows
     for c in num_cols:
         x = df2[c].to_numpy(dtype=np.float64, copy=False)
         s1 = _basic_stats(x)
-        s2 = _spectral_feats(x, fs)      # 不会在 fs=None 时输出 dom_freq_hz
+        s2 = _spectral_feats(x, fs)      # dom_freq_hz omitted when fs is None
         s3 = _trend_feats(x)
         s4 = _tail_stats(x, tail_frac)
         for k, v in {**s1, **s2, **s3, **s4}.items():
             feats[f"{c}__{k}"] = v
 
-    # 若有时间戳，可记录时长/采样率
+    # If a timestamp column exists, record sequence duration and fs estimate
     if ts_col is not None:
         dur_sec = (df2[ts_col].iloc[-1] - df2[ts_col].iloc[0]).total_seconds() if len(df2) > 1 else 0.0
         feats["seq_duration_sec"] = float(dur_sec)
@@ -276,42 +281,82 @@ def sensors_to_dataframe(
     max_rows_per_file: int = 0,
     time_cols=('timestamp','time','datetime','date','Time','Timestamp')
 ) -> pd.DataFrame:
-    """
-    将 ZIP 中的传感器文件（每文件一个样本）转换为特征向量，并与 duration/event 组装成 DataFrame。
-    """
+    """Convert per-subject sensor files into a feature table aligned with duration/event labels."""
     for col in (file_col, duration_col, event_col):
         if col not in manifest_df.columns:
-            raise KeyError(f"manifest 缺少列: '{col}'。需要列: file,duration,event")
+            raise KeyError(f"Manifest is missing column '{col}'. Required columns: file, duration, event.")
     rows = []
     dur_list = []
     evt_list = []
     id_list: Optional[List] = [] if (id_col and id_col in manifest_df.columns) else None
 
+    available = scan_sensor_files(sensor_root)
+    rel_lookup = {rel: abspath for rel, abspath in available}
+    rel_lookup.update({rel.lstrip("./"): abspath for rel, abspath in available})
+    basename_lookup: Dict[str, List[str]] = {}
+    for rel, abspath in available:
+        basename_lookup.setdefault(os.path.basename(rel), []).append(abspath)
+
+    missing_paths: List[str] = []
+    ambiguous_paths: List[str] = []
+
     for idx, r in manifest_df.iterrows():
         rel = str(r[file_col]).strip()
-        abspath = rel if os.path.isabs(rel) else os.path.join(sensor_root, rel)
-        if not os.path.exists(abspath):
+        rel_norm = rel.replace("\\", "/")
+        abspath: Optional[str] = None
+        if os.path.isabs(rel_norm) and os.path.exists(rel_norm):
+            abspath = rel_norm
+        else:
+            abspath = rel_lookup.get(rel_norm)
+            if abspath is None:
+                abspath = rel_lookup.get(rel_norm.lstrip("/"))
+            if abspath is None:
+                candidates = basename_lookup.get(os.path.basename(rel_norm), [])
+                if len(candidates) == 1:
+                    abspath = candidates[0]
+                elif len(candidates) > 1:
+                    ambiguous_paths.append(rel)
+                    continue
+        if abspath is None or not os.path.exists(abspath):
+            missing_paths.append(rel)
             continue
         try:
             df, ts_col2 = _read_one_table(abspath, time_cols=time_cols, max_rows=max_rows_per_file)
             feats = fullsequence_features(df, ts_col=ts_col2, resample_hz=resample_hz, max_rows=max_rows_per_file)
             rows.append(feats)
-            # —— 单独收集，避免 list-of-tuples 维度歧义 ——
+            # Collect scalars separately to avoid list-of-tuples ambiguity
             dur_list.append(float(pd.to_numeric(r[duration_col], errors="coerce")))
             evt_list.append(int(pd.to_numeric(r[event_col], errors="coerce")))
             if id_list is not None:
                 id_list.append(r[id_col])
         except Exception as e:
-            print(f"[sensor_pipeline] 跳过 {rel}: {e}")
+            print(f"[sensor_pipeline] Skipped {rel}: {e}")
             continue
 
     if not rows:
-        raise RuntimeError("未能从任何文件中提取到特征，请检查 ZIP 内容与标签的文件名是否对应。")
+        detail = []
+        if missing_paths:
+            missing_unique = sorted(set(missing_paths))
+            preview = ", ".join(missing_unique[:10])
+            if len(missing_unique) > 10:
+                preview += "…"
+            detail.append(f"Missing files: {preview}")
+        if ambiguous_paths:
+            ambiguous_unique = sorted(set(ambiguous_paths))
+            preview = ", ".join(ambiguous_unique[:10])
+            if len(ambiguous_unique) > 10:
+                preview += "…"
+            detail.append(f"Ambiguous matches (duplicate filenames in ZIP): {preview}")
+        hint = "; ".join(detail)
+        raise RuntimeError(
+            "No sensor features could be extracted. Ensure the manifest 'file' column matches entries inside the ZIP archive."
+            + (f" {hint}" if hint else "")
+        )
 
-    # 特征表
+    # Feature table
     feat_df = pd.DataFrame(rows)
 
-    # —— 列级清理：高NaN / 零方差 / 主频列（fs未知时的常量） ——
+    # Column filtering: drop high-NaN, zero-variance, and dom_freq columns when fs is unknown
     nan_ratio = feat_df.isna().mean()
     std = feat_df.std(ddof=0)
     keep_cols = (nan_ratio <= 0.2) & (std > 1e-12)
@@ -321,43 +366,54 @@ def sensors_to_dataframe(
         feat_df = feat_df.drop(columns=drop_domfreq)
 
     feat_df = feat_df.reindex(sorted(feat_df.columns), axis=1).fillna(0.0)
+    feat_df = feat_df.astype(np.float32)
+    feat_df.columns = [
+        c if str(c).startswith("sens_feat_") else f"sens_feat_{c}"
+        for c in feat_df.columns
+    ]
 
-    # 标签表（与成功提取特征的样本严格对齐）
+    # Label table aligned with successfully processed samples
     de = pd.DataFrame({
         "duration": pd.Series(dur_list, dtype="float32"),
         "event":    pd.Series(evt_list, dtype="int32"),
     })
     if id_list is not None:
-        de.insert(0, id_col, pd.Series(id_list))
+        ids = pd.Series([canonicalize_identifier(v) for v in id_list], dtype="string")
+        de.insert(0, id_col, ids)
 
-    # 安全检查
+    # Safety check
     if len(de) != len(feat_df):
-        raise RuntimeError(f"标签与特征行数不一致: de={len(de)} feat={len(feat_df)}。"
-                        "可能有文件损坏/跳过导致。")
+        raise RuntimeError(
+            f"Number of labels and extracted feature rows differ: labels={len(de)} features={len(feat_df)}. "
+            "Some sensor files may be missing or failed to parse."
+        )
 
-    # —— （可选）全局 Z-score 标准化：先用着验证信号，之后可移到 trainer 里用train-only统计 ——
+    # Optional global z-score normalisation (can be moved to trainer later)
     DO_GLOBAL_Z = True
-    if DO_GLOBAL_Z:
+    if DO_GLOBAL_Z and not feat_df.empty:
         mu = feat_df.mean(axis=0)
         sigma = feat_df.std(axis=0).replace(0.0, 1.0)
         feat_df = (feat_df - mu) / sigma
 
     out = pd.concat([de, feat_df.astype(np.float32)], axis=1)
-    # 统一前缀
-    out.columns = ["duration","event"] + [f"sens_feat_{c}" if not str(c).startswith("sens_feat_") else c
-                                        for c in out.columns[2:]]
+
+    if id_col and id_col in out.columns:
+        if out[id_col].duplicated().any():
+            agg_map = {"duration": "first", "event": "first"}
+            feat_cols = [c for c in out.columns if c not in {id_col, "duration", "event"}]
+            agg_map.update({c: "mean" for c in feat_cols})
+            out = out.groupby(id_col, as_index=False).agg(agg_map)
+
     return out
 
 
 
 def build_manifest_from_sensors_zip(uploaded_zip_file) -> Tuple[pd.DataFrame, str]:
-    """
-    解压 ZIP 并生成一份待标注的 manifest（file, duration, event），duration/event 先留空或默认0。
-    """
+    """Extract the ZIP and prepare a manifest (file, duration, event) with empty labels."""
     root = unzip_sensors_to_temp(uploaded_zip_file)
     files = [rel for rel,_ in scan_sensor_files(root)]
     if not files:
-        raise RuntimeError("ZIP 中未找到传感器文件（支持 .csv/.parquet/.txt）")
+        raise RuntimeError("No sensor files were found in the ZIP (supported: .csv/.parquet/.txt).")
     df = pd.DataFrame({"file": files, "duration": np.nan, "event": 0})
     return df, root
 
