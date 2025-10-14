@@ -1,7 +1,7 @@
 
 # run_models.py — MySA-integrated Workbench (drop-in replacement)
 # This page supports: CoxTime, DeepSurv, DeepHit, and MySA (TEXGI).
-# - Adds two loss-weight sliders (lambda_smooth, lambda_expert)
+# - Adds three loss-weight sliders (lambda_smooth, lambda_expert, lambda_texgi_smooth)
 # - Adds an editable Expert Rules table (relation/sign/min_mag/weight)
 # - Shows TEXGI Feature Importance (Top-K + expand to all), and allows downloading time-dependent attributions.
 
@@ -151,6 +151,7 @@ def _qhelp_md(key: str) -> str:
         # MySA Regularization & Priors
         "lambda_expert":  "The weight for the expert prior penalty (λ_expert). A larger value enforces stronger adherence to expert rules/importance; too large may sacrifice predictive performance.",
         "lambda_smooth":  "The weight for smoothness in the time dimension (λ_smooth). Makes explanations smoother across adjacent time points; too large may mask true time-dependent effects.",
+        "lambda_texgi_smooth": "Additional smoothness applied directly to TEXGI attributions across neighboring time bins. Helps keep explanations stable when modalities introduce high-variance signals.",
         "fast_mode":      "Acceleration mode: Uses a lightweight generator and approximate TEXGI for a quick preview of the expert prior's effect. Results may differ slightly from the full version.",
         "ig_steps":       "The number of integration steps for calculating Integrated Gradients (TEXGI). Larger is more accurate but slower (commonly 16~64).",
 
@@ -534,6 +535,17 @@ def _build_multimodal_sources(config: dict) -> Optional[Dict[str, Any]]:
             "id_col": img_id,
             "feature_cols": img_feats,
         }
+        raw_manifest = st.session_state.get("mm_image_manifest")
+        raw_root = st.session_state.get("mm_image_root_raw")
+        path_col = st.session_state.get("mm_image_path_col", "image")
+        id_override = st.session_state.get("mm_image_id_col", img_id)
+        if raw_manifest is not None and raw_root:
+            sources["image"]["raw_assets"] = {
+                "manifest": raw_manifest.copy(),
+                "root": raw_root,
+                "path_col": path_col,
+                "id_col": id_override,
+            }
 
     if has_sensor:
         sens_df = dm.sensor_df
@@ -544,11 +556,24 @@ def _build_multimodal_sources(config: dict) -> Optional[Dict[str, Any]]:
             "id_col": sens_id,
             "feature_cols": sens_feats,
         }
+        raw_manifest = st.session_state.get("mm_sensor_manifest")
+        raw_root = st.session_state.get("mm_sensor_root_raw")
+        path_col = st.session_state.get("mm_sensor_path_col", "file")
+        id_override = st.session_state.get("mm_sensor_id_col", sens_id)
+        if raw_manifest is not None and raw_root:
+            sources["sensor"]["raw_assets"] = {
+                "manifest": raw_manifest.copy(),
+                "root": raw_root,
+                "path_col": path_col,
+                "id_col": id_override,
+            }
 
     def _has_features(info: Any) -> bool:
         """Return True when a modality descriptor contains non-empty features."""
         if not isinstance(info, dict):
             return False
+        if info.get("raw_assets"):
+            return True
         cols = info.get("feature_cols")
         if cols is None:
             return False
@@ -1171,6 +1196,10 @@ def show():
                                 batch_size=int(img_bs),
                                 num_workers=0,
                             )
+                        st.session_state["mm_image_manifest"] = img_manifest_df.copy()
+                        st.session_state["mm_image_root_raw"] = img_root
+                        st.session_state["mm_image_path_col"] = "image"
+                        st.session_state["mm_image_id_col"] = img_id_col
                         if img_id_col != id_col and image_df is not None and img_id_col in image_df.columns:
                             image_df = image_df.rename(columns={img_id_col: id_col})
                         if image_df is not None and id_col in image_df.columns:
@@ -1197,6 +1226,10 @@ def show():
                                 resample_hz=float(sens_resample),
                                 max_rows_per_file=int(sens_max_rows),
                             )
+                        st.session_state["mm_sensor_manifest"] = sens_manifest_df.copy()
+                        st.session_state["mm_sensor_root_raw"] = sens_root
+                        st.session_state["mm_sensor_path_col"] = "file"
+                        st.session_state["mm_sensor_id_col"] = sens_id_col
                         if sens_id_col != id_col and sensor_df is not None and sens_id_col in sensor_df.columns:
                             sensor_df = sensor_df.rename(columns={sens_id_col: id_col})
                         if sensor_df is not None and id_col in sensor_df.columns:
@@ -1503,7 +1536,7 @@ def show():
     # ===================== 4) TEXGISA regularizers & expert rules ================
     if algo == "TEXGISA":
         st.markdown("### Regularizers")
-        r1, r2 = st.columns(2)
+        r1, r2, r3 = st.columns(3)
         with r1:
             lambda_smooth = field_with_help(
                 st.number_input, "λ_smooth (temporal smoothness)", "lambda_smooth",
@@ -1513,7 +1546,18 @@ def show():
             lambda_expert = field_with_help(
                 st.number_input, "λ_expert (expert prior penalty)", "lambda_expert",
                 0.0, 10.0, 0.10, step=0.05, format="%.2f"
-    )
+            )
+        with r3:
+            lambda_texgi_smooth = field_with_help(
+                st.number_input,
+                "λ_texgi_smooth (TEXGI temporal smoothness)",
+                "lambda_texgi_smooth",
+                0.0,
+                1.0,
+                0.05,
+                step=0.01,
+                format="%.2f",
+            )
 
         st.markdown("### Expert Rules")
         # Prepare blank editor with choices
@@ -1586,6 +1630,7 @@ def show():
         config.update({
             "lambda_smooth": float(lambda_smooth),
             "lambda_expert": float(lambda_expert),
+            "lambda_texgi_smooth": float(lambda_texgi_smooth),
             "expert_rules": expert_rules,
             "ig_steps": int(ig_steps),
             "latent_dim": int(latent_dim),

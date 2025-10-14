@@ -63,6 +63,12 @@ except ModuleNotFoundError:
 from data import make_intervals, build_supervision, infer_feature_cols, create_dataloaders
 from model import MultiTaskModel
 from metrics import cindex_fast
+from multimodal_assets import (
+    AssetBackedMultiModalDataset,
+    build_image_paths_for_ids,
+    build_sensor_paths_for_ids,
+    SensorSpec,
+)
 
 __all__ = ["run_mysa", "run_texgisa"]
 
@@ -193,36 +199,108 @@ def _build_encoder(input_dim: int, hidden: int, depth: int, dropout: float) -> n
     return nn.Sequential(*layers)
 
 
+class TabularAssetEncoder(nn.Module):
+    def __init__(self, input_dim: int, embed_dim: int, depth: int, hidden: int, dropout: float):
+        super().__init__()
+        layers: List[nn.Module] = []
+        d = input_dim
+        for _ in range(max(1, depth - 1)):
+            layers.append(nn.Linear(d, hidden))
+            layers.append(nn.ReLU())
+            if dropout > 0:
+                layers.append(nn.Dropout(dropout))
+            d = hidden
+        layers.append(nn.Linear(d, embed_dim))
+        self.net = nn.Sequential(*layers)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
+
+
 class MultiModalMySAModel(nn.Module):
-    """Lightweight gating-based fusion model for multimodal survival."""
+    """Gating-based fusion model supporting both flat and raw multimodal inputs."""
 
     def __init__(
         self,
-        modality_slices: List[Tuple[str, slice]],
+        modality_slices: Optional[List[Tuple[str, slice]]],
         num_bins: int,
         hidden: int = 256,
         depth: int = 2,
         dropout: float = 0.2,
+        raw_modalities: Optional[List[Tuple[str, Dict[str, Any]]]] = None,
     ) -> None:
         super().__init__()
-        if not modality_slices:
-            raise ValueError("At least one modality slice must be provided.")
-
-        self.modality_slices = modality_slices
         self.hidden = hidden
-
-        encoders = {}
-        gates = {}
-        for name, sl in modality_slices:
-            in_dim = sl.stop - sl.start
-            if in_dim <= 0:
-                raise ValueError(f"Modality '{name}' has non-positive feature dimension: {in_dim}")
-            encoders[name] = _build_encoder(in_dim, hidden, depth, dropout)
-            gates[name] = nn.Linear(hidden, 1)
-
-        self.encoders = nn.ModuleDict(encoders)
-        self.gates = nn.ModuleDict(gates)
+        self.mode = "flat"
         self.hazard_layer = nn.Linear(hidden, num_bins)
+
+        if raw_modalities:
+            self.mode = "raw"
+            self.raw_order: List[str] = []
+            self.raw_slices: Dict[str, slice] = {}
+            self.raw_encoders = nn.ModuleDict()
+            self.projectors = nn.ModuleDict()
+            self.gates = nn.ModuleDict()
+
+            start = 0
+            for name, info in raw_modalities:
+                raw_dim = int(info.get("raw_dim", 0))
+                if raw_dim <= 0:
+                    raise ValueError(f"Modality '{name}' has invalid raw_dim {raw_dim}")
+                sl = slice(start, start + raw_dim)
+                self.raw_order.append(name)
+                self.raw_slices[name] = sl
+                start += raw_dim
+
+                if name == "tabular":
+                    input_dim = int(info.get("input_dim", raw_dim))
+                    encoder = TabularAssetEncoder(input_dim, raw_dim, depth, hidden, dropout)
+                elif name == "image":
+                    from .multimodal import ImageEncoder as _ImageEncoder
+
+                    backbone = info.get("backbone", "resnet18")
+                    pretrained = bool(info.get("pretrained", True))
+                    img_backbone = _ImageEncoder(backbone=backbone, pretrained=pretrained)
+                    encoder = nn.Sequential(
+                        img_backbone,
+                        nn.Linear(img_backbone.out_dim, raw_dim),
+                        nn.ReLU(),
+                    )
+                elif name == "sensor":
+                    from .multimodal import SensorEncoder as _SensorEncoder
+
+                    in_channels = int(info.get("in_channels", 1))
+                    backbone = info.get("backbone", "cnn")
+                    sensor_backbone = _SensorEncoder(input_channels=in_channels, backbone=backbone)
+                    encoder = nn.Sequential(
+                        sensor_backbone,
+                        nn.Linear(sensor_backbone.out_dim, raw_dim),
+                        nn.ReLU(),
+                    )
+                else:
+                    raise ValueError(f"Unsupported modality '{name}' in raw configuration")
+
+                self.raw_encoders[name] = encoder
+                proj_layers: List[nn.Module] = [nn.Linear(raw_dim, hidden), nn.ReLU()]
+                if dropout > 0:
+                    proj_layers.append(nn.Dropout(dropout))
+                self.projectors[name] = nn.Sequential(*proj_layers)
+                self.gates[name] = nn.Linear(hidden, 1)
+
+        elif modality_slices:
+            self.modality_slices = modality_slices
+            encoders = {}
+            gates = {}
+            for name, sl in modality_slices:
+                in_dim = sl.stop - sl.start
+                if in_dim <= 0:
+                    raise ValueError(f"Modality '{name}' has non-positive feature dimension: {in_dim}")
+                encoders[name] = _build_encoder(in_dim, hidden, depth, dropout)
+                gates[name] = nn.Linear(hidden, 1)
+            self.encoders = nn.ModuleDict(encoders)
+            self.gates = nn.ModuleDict(gates)
+        else:
+            raise ValueError("Either modality_slices or raw_modalities must be provided.")
 
         for m in self.modules():
             if isinstance(m, nn.Linear):
@@ -230,16 +308,41 @@ class MultiModalMySAModel(nn.Module):
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
 
-    def forward(self, x: torch.Tensor, modality_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
-        B = x.size(0)
+    # ------------------------------------------------------------------
+    def encode_modalities(
+        self,
+        x: Dict[str, torch.Tensor],
+        modality_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        if self.mode != "raw":
+            raise RuntimeError("encode_modalities is only available in raw mode.")
         feats: List[torch.Tensor] = []
-        gate_logits: List[torch.Tensor] = []
-
-        for idx, (name, sl) in enumerate(self.modality_slices):
-            h = self.encoders[name](x[:, sl])
+        for idx, name in enumerate(self.raw_order):
+            feat = self.raw_encoders[name](x[name])
+            sl = self.raw_slices[name]
             if modality_mask is not None:
                 mask = modality_mask[:, idx].unsqueeze(1)
-                h = h * mask
+                feat = feat * mask
+            feats.append(feat)
+        return torch.cat(feats, dim=1)
+
+    # ------------------------------------------------------------------
+    def forward_from_embeddings(
+        self,
+        embeddings: torch.Tensor,
+        modality_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        if self.mode == "flat":
+            return self._forward_flat(embeddings, modality_mask)
+
+        feats: List[torch.Tensor] = []
+        gate_logits: List[torch.Tensor] = []
+        for idx, name in enumerate(self.raw_order):
+            sl = self.raw_slices[name]
+            seg = embeddings[:, sl]
+            if modality_mask is not None:
+                seg = seg * modality_mask[:, idx].unsqueeze(1)
+            h = self.projectors[name](seg)
             feats.append(h)
             gate_logits.append(self.gates[name](h))
 
@@ -248,12 +351,67 @@ class MultiModalMySAModel(nn.Module):
             logits = logits.masked_fill(modality_mask == 0, -1e4)
 
         attn = torch.softmax(logits, dim=1)
+        fused = torch.zeros(embeddings.size(0), self.hidden, device=embeddings.device)
+        for idx, _ in enumerate(self.raw_order):
+            fused = fused + feats[idx] * attn[:, idx].unsqueeze(1)
+
+        return torch.sigmoid(self.hazard_layer(fused))
+
+    # ------------------------------------------------------------------
+    def _forward_flat(
+        self,
+        x: torch.Tensor,
+        modality_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        B = x.size(0)
+        feats: List[torch.Tensor] = []
+        gate_logits: List[torch.Tensor] = []
+        for idx, (name, sl) in enumerate(self.modality_slices):
+            h = self.encoders[name](x[:, sl])
+            if modality_mask is not None:
+                mask = modality_mask[:, idx].unsqueeze(1)
+                h = h * mask
+            feats.append(h)
+            gate_logits.append(self.gates[name](h))
+        logits = torch.cat(gate_logits, dim=1)
+        if modality_mask is not None:
+            logits = logits.masked_fill(modality_mask == 0, -1e4)
+        attn = torch.softmax(logits, dim=1)
         fused = torch.zeros(B, self.hidden, device=x.device)
         for idx, _ in enumerate(self.modality_slices):
             fused = fused + feats[idx] * attn[:, idx].unsqueeze(1)
+        return torch.sigmoid(self.hazard_layer(fused))
 
-        hazards = torch.sigmoid(self.hazard_layer(fused))
-        return hazards
+    # ------------------------------------------------------------------
+    def forward(
+        self,
+        x: Any,
+        modality_mask: Optional[torch.Tensor] = None,
+        return_embeddings: bool = False,
+    ) -> Any:
+        if self.mode == "flat":
+            if not torch.is_tensor(x):
+                raise TypeError("Flat mode expects a tensor input")
+            hazards = self._forward_flat(x, modality_mask)
+            if return_embeddings:
+                return hazards, x
+            return hazards
+
+        # raw mode
+        if isinstance(x, dict):
+            embeddings = self.encode_modalities(x, modality_mask)
+            hazards = self.forward_from_embeddings(embeddings, modality_mask)
+            if return_embeddings:
+                return hazards, embeddings
+            return hazards
+
+        if torch.is_tensor(x):
+            hazards = self.forward_from_embeddings(x, modality_mask)
+            if return_embeddings:
+                return hazards, x
+            return hazards
+
+        raise TypeError("Unsupported input type for MultiModalMySAModel")
 
 
 @torch.no_grad()
@@ -541,6 +699,7 @@ class MySATrainer:
         device: Optional[str] = None,
         lambda_smooth: float = 0.0,
         lambda_expert: float = 0.0,
+        lambda_texgi_smooth: float = 0.0,
         expert_rules: Optional[Dict[str, Any]] = None,
         feat2idx: Optional[Dict[str, int]] = None,
         # TEXGI settings:
@@ -565,6 +724,7 @@ class MySATrainer:
 
         self.lambda_smooth = float(lambda_smooth)
         self.lambda_expert = float(lambda_expert)
+        self.lambda_texgi_smooth = float(lambda_texgi_smooth)
         self.expert_rules = expert_rules or {}
         self.feat2idx = feat2idx or {}
 
@@ -584,16 +744,33 @@ class MySATrainer:
         self.ig_time_subsample = (int(ig_time_subsample) if ig_time_subsample
                                   else None)
 
-    def _model_forward(self, X: torch.Tensor, modality_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def _model_forward(
+        self,
+        X: Any,
+        modality_mask: Optional[torch.Tensor] = None,
+        return_embeddings: bool = False,
+    ) -> Any:
+        kwargs: Dict[str, Any] = {}
         if modality_mask is not None:
-            try:
-                return self.model(X, modality_mask=modality_mask)
-            except TypeError:
-                return self.model(X)
-        return self.model(X)
+            kwargs["modality_mask"] = modality_mask
+        if return_embeddings:
+            kwargs["return_embeddings"] = True
+        try:
+            return self.model(X, **kwargs)
+        except TypeError:
+            kwargs.pop("modality_mask", None)
+            return self.model(X, **kwargs)
 
     @staticmethod
     def _unpack_batch(batch) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+        if isinstance(batch, dict):
+            X = batch.get("modalities") or batch.get("x")
+            y = batch.get("y")
+            m = batch.get("m")
+            mask = batch.get("modality_mask")
+            if X is None or y is None or m is None:
+                raise ValueError("Batch dict must contain modalities/y/m")
+            return X, y, m, mask
         if isinstance(batch, (list, tuple)):
             if len(batch) == 3:
                 X, y, m = batch
@@ -631,48 +808,86 @@ class MySATrainer:
             modality_mask=self.modality_mask_ref
         )
 
-    def step(self, batch) -> Tuple[float, float, float]:
+    def step(self, batch) -> Tuple[float, float, float, float]:
         X, y, m, modality_mask = self._unpack_batch(batch)
-        X = X.to(self.device, non_blocking=True)
+        X = self._move_to_device(X)
         y = y.to(self.device, non_blocking=True)
         m = m.to(self.device, non_blocking=True)
         mask_t = modality_mask.to(self.device, non_blocking=True) if modality_mask is not None else None
 
         self.model.train()
-        hazards = self._model_forward(X, mask_t)  # [B, T]
+        out = self._model_forward(X, mask_t, return_embeddings=True)
+        if isinstance(out, tuple):
+            hazards, embeddings = out
+        else:
+            hazards, embeddings = out, X if torch.is_tensor(X) else None
+        hazards = hazards  # [B, T]
         loss_main = masked_bce_nll(hazards, y, m)
         loss_smooth = smooth_l1_temporal(hazards, self.lambda_smooth)
         loss = loss_main + loss_smooth
 
-        loss_expert = X.new_tensor(0.0)
-        if self.lambda_expert > 0 and self.expert_rules and self.feat2idx:
+        loss_expert = hazards.new_tensor(0.0)
+        loss_texgi = hazards.new_tensor(0.0)
+        need_texgi = (self.lambda_expert > 0 and self.expert_rules and self.feat2idx) or self.lambda_texgi_smooth > 0
+        if need_texgi:
             # Ensure generator fitted
             self.fit_generator_if_needed()
             with torch.enable_grad():
                 # Subsample for IG to control cost
-                B = X.shape[0]
+                B = X.shape[0] if torch.is_tensor(X) else embeddings.shape[0]
                 sub = min(B, self.ig_batch_samples)
-                idx = torch.randperm(B, device=X.device)[:sub]
-                Xsub = X[idx].detach().clone().requires_grad_(True)
+                idx = torch.randperm(B, device=hazards.device)[:sub]
+                if embeddings is None:
+                    Xsub = (
+                        X[idx].detach().clone().requires_grad_(True)
+                        if torch.is_tensor(X)
+                        else None
+                    )
+                else:
+                    Xsub = embeddings[idx].detach().clone().requires_grad_(True)
                 mask_sub = None
                 if mask_t is not None:
                     mask_sub = mask_t[idx].detach()
+                forward_fn = (
+                    lambda z, modality_mask=None: self.model.forward_from_embeddings(
+                        z,
+                        modality_mask=modality_mask,
+                    )
+                    if hasattr(self.model, "forward_from_embeddings")
+                    else self.model
+                )
                 phi = texgi_time_series(
-                    self.model, Xsub, self.G, self.ref_stats,
-                    M=self.ig_steps, latent_dim=self.latent_dim, extreme_dim=self.extreme_dim,
+                    forward_fn,
+                    Xsub,
+                    self.G,
+                    self.ref_stats or {},
+                    M=self.ig_steps,
+                    latent_dim=self.latent_dim,
+                    extreme_dim=self.extreme_dim,
                     t_sample=self.ig_time_subsample,
                     forward_kwargs={"modality_mask": mask_sub} if mask_sub is not None else None,
                 )
 
-                loss_Omega = expert_penalty(phi, self.expert_rules, self.feat2idx)
-                loss_expert = self.lambda_expert * loss_Omega
-                loss = loss + loss_expert
+                if self.lambda_expert > 0 and self.expert_rules and self.feat2idx:
+                    loss_Omega = expert_penalty(phi, self.expert_rules, self.feat2idx)
+                    loss_expert = self.lambda_expert * loss_Omega
+                    loss = loss + loss_expert
+
+                if self.lambda_texgi_smooth > 0 and phi.size(0) > 1:
+                    diff = phi[1:] - phi[:-1]
+                    loss_texgi = self.lambda_texgi_smooth * diff.pow(2).mean()
+                    loss = loss + loss_texgi
 
         self.opt.zero_grad(set_to_none=True)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=5.0)
         self.opt.step()
-        return loss_main.item(), loss_smooth.item(), loss_expert.item()
+        return (
+            loss_main.item(),
+            loss_smooth.item(),
+            loss_expert.item(),
+            loss_texgi.item(),
+        )
 
     @torch.no_grad()
     def evaluate_cindex(self, loader, durations, events) -> float:
@@ -680,7 +895,7 @@ class MySATrainer:
         all_risk = []
         for batch in loader:
             X, _, _, modality_mask = self._unpack_batch(batch)
-            X = X.to(self.device, non_blocking=True)
+            X = self._move_to_device(X)
             mask_t = modality_mask.to(self.device, non_blocking=True) if modality_mask is not None else None
             hazards = self._model_forward(X, mask_t)
             risk = torch.sum(hazards, dim=1)  # simple risk proxy; larger -> earlier event
@@ -788,7 +1003,51 @@ def _align_modality_features(
     return arr, mask, names
 
 
+def _collect_embeddings(
+    model: "MultiModalMySAModel",
+    loader: DataLoader,
+    device: torch.device,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Collect encoder embeddings and modality masks from a dataloader."""
+
+    feats: List[torch.Tensor] = []
+    masks: List[torch.Tensor] = []
+    model.eval()
+    with torch.no_grad():
+        for batch in loader:
+            X, _, _, mod_mask = batch
+            if isinstance(X, dict):
+                X_dev = {k: v.to(device, non_blocking=True) for k, v in X.items()}
+            else:
+                X_dev = X.to(device, non_blocking=True)
+            mask_dev = mod_mask.to(device, non_blocking=True)
+            _, emb = model(X_dev, modality_mask=mask_dev, return_embeddings=True)
+            feats.append(emb.cpu())
+            masks.append(mod_mask.cpu())
+    if not feats:
+        return np.zeros((0, 0), dtype=np.float32), np.zeros((0, 0), dtype=np.float32)
+    emb_np = torch.cat(feats, dim=0).numpy()
+    mask_np = torch.cat(masks, dim=0).numpy()
+    return emb_np.astype(np.float32, copy=False), mask_np.astype(np.float32, copy=False)
+
+
 def _prepare_multimodal_inputs(data: pd.DataFrame, config: Dict, multimodal_cfg: Dict[str, Any]) -> Dict[str, Any]:
+    image_info = multimodal_cfg.get("image") or {}
+    sensor_info = multimodal_cfg.get("sensor") or {}
+    image_raw = image_info.get("raw_assets") if isinstance(image_info, dict) else None
+    sensor_raw = sensor_info.get("raw_assets") if isinstance(sensor_info, dict) else None
+
+    if image_raw or sensor_raw:
+        return _prepare_multimodal_inputs_raw(
+            data,
+            config,
+            multimodal_cfg,
+            image_raw,
+            sensor_raw,
+            image_info,
+            sensor_info,
+        )
+
     tab_info = multimodal_cfg.get("tabular", {}) or {}
     tab_df = tab_info.get("data")
     if tab_df is None:
@@ -922,6 +1181,282 @@ def _prepare_multimodal_inputs(data: pd.DataFrame, config: Dict, multimodal_cfg:
     }
 
 
+def _prepare_multimodal_inputs_raw(
+    data: pd.DataFrame,
+    config: Dict,
+    multimodal_cfg: Dict[str, Any],
+    image_raw: Optional[Dict[str, Any]],
+    sensor_raw: Optional[Dict[str, Any]],
+    image_info: Dict[str, Any],
+    sensor_info: Dict[str, Any],
+) -> Dict[str, Any]:
+    tab_info = multimodal_cfg.get("tabular", {}) or {}
+    tab_df = tab_info.get("data")
+    if tab_df is None:
+        tab_df = data.copy()
+    else:
+        tab_df = tab_df.copy()
+
+    id_col = tab_info.get("id_col") or multimodal_cfg.get("id_col") or config.get("id_col")
+    if not id_col:
+        raise ValueError("`id_col` must be provided for multimodal MySA training.")
+    if id_col not in tab_df.columns:
+        raise ValueError(f"Tabular modality must contain id column '{id_col}'.")
+
+    required_cols = {"duration", "event"}
+    if not required_cols.issubset(tab_df.columns):
+        missing = required_cols - set(tab_df.columns)
+        raise ValueError(f"Tabular modality missing required columns: {missing}")
+
+    tab_feat_cols = tab_info.get("feature_cols") or config.get("feature_cols") or []
+    tab_feat_cols = [c for c in tab_feat_cols if c not in {id_col, "duration", "event"}]
+    if not tab_feat_cols:
+        tab_feat_cols = infer_feature_cols(tab_df, exclude=[id_col, "duration", "event"])
+
+    n_bins = int(config.get("n_bins", 30))
+    df = make_intervals(tab_df, duration_col="duration", event_col="event", n_bins=n_bins, method="quantile")
+    num_bins = int(df["interval_number"].max())
+
+    base_ids = df[id_col].astype(str)
+    id_list = base_ids.tolist()
+    # base_ids index not required beyond id list
+
+    # Tabular matrix
+    tab_numeric = df[tab_feat_cols].apply(pd.to_numeric, errors="coerce").fillna(0.0)
+    tab_arr = tab_numeric.to_numpy(np.float32)
+
+    # Prepare modality masks and asset paths
+    modality_order: List[str] = ["tabular"]
+    modality_masks = [np.ones(len(df), dtype=np.float32)]
+    image_paths: Optional[List[Optional[str]]] = None
+    sensor_paths: Optional[List[Optional[str]]] = None
+    sensor_spec: Optional[SensorSpec] = None
+
+    image_embed_dim = int(config.get("image_embed_dim", 256))
+    sensor_embed_dim = int(config.get("sensor_embed_dim", 128))
+
+    if image_raw:
+        manifest = image_raw.get("manifest")
+        root = image_raw.get("root")
+        path_col = image_raw.get("path_col", "image")
+        id_override = image_raw.get("id_col") or image_info.get("id_col") or id_col
+        if manifest is not None and root:
+            manifest = manifest.copy()
+            manifest[id_override] = manifest[id_override].astype(str)
+            image_paths = build_image_paths_for_ids(
+                id_list,
+                manifest=manifest,
+                id_col=id_override,
+                path_col=path_col,
+                root=root,
+            )
+            mask = np.array([1.0 if p else 0.0 for p in image_paths], dtype=np.float32)
+            modality_order.append("image")
+            modality_masks.append(mask)
+        else:
+            image_paths = None
+
+    if sensor_raw:
+        manifest = sensor_raw.get("manifest")
+        root = sensor_raw.get("root")
+        path_col = sensor_raw.get("path_col", "file")
+        id_override = sensor_raw.get("id_col") or sensor_info.get("id_col") or id_col
+        if manifest is not None and root:
+            manifest = manifest.copy()
+            manifest[id_override] = manifest[id_override].astype(str)
+            sensor_paths, sensor_spec = build_sensor_paths_for_ids(
+                id_list,
+                manifest=manifest,
+                id_col=id_override,
+                path_col=path_col,
+                root=root,
+            )
+            if sensor_spec is not None:
+                mask = np.array([1.0 if p else 0.0 for p in sensor_paths], dtype=np.float32)
+                modality_order.append("sensor")
+                modality_masks.append(mask)
+            else:
+                sensor_paths = None
+
+    if len(modality_order) == 1:
+        raise ValueError("Raw multimodal pipeline requires at least one additional modality.")
+
+    mask_matrix = np.stack(modality_masks, axis=1)
+
+    durations = df["duration"].to_numpy(np.float32)
+    events = df["event"].to_numpy(np.int32)
+    intervals = df["interval_number"].to_numpy(np.int32)
+
+    N = len(df)
+    idx = np.arange(N)
+    rng = np.random.default_rng(42)
+    rng.shuffle(idx)
+    split = int(N * (1.0 - float(config.get("val_ratio", 0.2))))
+    tr, va = idx[:split], idx[split:]
+
+    y_tr, m_tr = build_supervision(intervals[tr], events[tr], num_bins)
+    y_va, m_va = build_supervision(intervals[va], events[va], num_bins)
+
+    tab_tr = tab_arr[tr]
+    tab_va = tab_arr[va]
+
+    mask_tr = mask_matrix[tr]
+    mask_va = mask_matrix[va]
+
+    id_tr = [id_list[i] for i in tr]
+    id_va = [id_list[i] for i in va]
+
+    image_tr = [image_paths[i] if image_paths else None for i in tr]
+    image_va = [image_paths[i] if image_paths else None for i in va]
+
+    sensor_tr = [sensor_paths[i] if sensor_paths else None for i in tr] if sensor_paths else None
+    sensor_va = [sensor_paths[i] if sensor_paths else None for i in va] if sensor_paths else None
+
+    image_size = config.get("image_size", 224)
+    if isinstance(image_size, (int, float)):
+        image_size = (int(image_size), int(image_size))
+    elif isinstance(image_size, (list, tuple)) and len(image_size) == 2:
+        image_size = (int(image_size[0]), int(image_size[1]))
+    else:
+        image_size = (224, 224)
+
+    train_ds = AssetBackedMultiModalDataset(
+        ids=id_tr,
+        tabular=tab_tr,
+        labels=y_tr,
+        masks=m_tr,
+        modality_mask=mask_tr,
+        tabular_names=tab_feat_cols,
+        image_paths=image_tr if image_paths is not None else None,
+        image_size=image_size,
+        sensor_paths=sensor_tr if sensor_paths is not None else None,
+        sensor_spec=sensor_spec,
+    )
+    val_ds = AssetBackedMultiModalDataset(
+        ids=id_va,
+        tabular=tab_va,
+        labels=y_va,
+        masks=m_va,
+        modality_mask=mask_va,
+        tabular_names=tab_feat_cols,
+        image_paths=image_va if image_paths is not None else None,
+        image_size=image_size,
+        sensor_paths=sensor_va if sensor_paths is not None else None,
+        sensor_spec=sensor_spec,
+    )
+
+    batch_size = int(config.get("batch_size", 128))
+    num_workers = int(config.get("num_workers", 0))
+    pin_memory = torch.cuda.is_available()
+
+    train_loader = DataLoader(
+        train_ds,
+        batch_size=batch_size,
+        shuffle=True,
+        drop_last=True,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        collate_fn=train_ds.collate_fn,
+    )
+    train_eval_loader = DataLoader(
+        train_ds,
+        batch_size=batch_size,
+        shuffle=False,
+        drop_last=False,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        collate_fn=train_ds.collate_fn,
+    )
+    val_loader = DataLoader(
+        val_ds,
+        batch_size=batch_size,
+        shuffle=False,
+        drop_last=False,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        collate_fn=val_ds.collate_fn,
+    )
+
+    # Configure model modalities
+    feature_names: List[str] = []
+    raw_modalities: List[Tuple[str, Dict[str, Any]]] = []
+
+    tab_names = [f"tabular:{c}" for c in tab_feat_cols]
+    feature_names.extend(tab_names)
+    raw_modalities.append(
+        (
+            "tabular",
+            {
+                "input_dim": len(tab_feat_cols),
+                "raw_dim": len(tab_feat_cols),
+                "feature_names": tab_names,
+            },
+        )
+    )
+
+    if image_paths is not None:
+        img_names = [f"image:feat_{i:03d}" for i in range(image_embed_dim)]
+        feature_names.extend(img_names)
+        raw_modalities.append(
+            (
+                "image",
+                {
+                    "raw_dim": image_embed_dim,
+                    "feature_names": img_names,
+                    "backbone": config.get("image_backbone", "resnet18"),
+                    "pretrained": bool(config.get("image_pretrained", True)),
+                },
+            )
+        )
+
+    if sensor_paths is not None and sensor_spec is not None:
+        sens_names = [f"sensor:feat_{i:03d}" for i in range(sensor_embed_dim)]
+        feature_names.extend(sens_names)
+        raw_modalities.append(
+            (
+                "sensor",
+                {
+                    "raw_dim": sensor_embed_dim,
+                    "feature_names": sens_names,
+                    "backbone": config.get("sensor_backbone", "cnn"),
+                    "in_channels": sensor_spec.channels,
+                    "target_len": sensor_spec.target_len,
+                },
+            )
+        )
+
+    model = MultiModalMySAModel(
+        None,
+        num_bins=num_bins,
+        hidden=int(config.get("hidden", 256)),
+        depth=int(config.get("depth", 2)),
+        dropout=float(config.get("dropout", 0.2)),
+        raw_modalities=raw_modalities,
+    )
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = model.to(device)
+    X_tr, mask_tr_np = _collect_embeddings(model, train_eval_loader, device)
+    X_va, mask_va_np = _collect_embeddings(model, val_loader, device)
+
+    feat2idx = {n: i for i, n in enumerate(feature_names)}
+
+    return {
+        "train_loader": train_loader,
+        "val_loader": val_loader,
+        "model": model,
+        "feature_names": feature_names,
+        "feat2idx": feat2idx,
+        "num_bins": num_bins,
+        "dur_va": torch.tensor(durations[va]),
+        "evt_va": torch.tensor(events[va]),
+        "X_train": X_tr,
+        "X_val": X_va,
+        "mask_train": mask_tr_np,
+        "mask_val": mask_va_np,
+    }
+
+
 def hazards_to_survival(h: np.ndarray) -> np.ndarray:
     """Convert hazards [N, T] to survival curves [N, T] via S_t = Π_k≤t (1 - h_k)."""
     h = np.asarray(h, dtype=np.float32)
@@ -968,6 +1503,7 @@ def _run_mysa_core(prepared: Dict[str, Any], config: Dict) -> Dict:
         device=config.get("device", None),
         lambda_smooth=float(config.get("lambda_smooth", 0.0)),
         lambda_expert=float(config.get("lambda_expert", 0.0)),
+        lambda_texgi_smooth=float(config.get("lambda_texgi_smooth", 0.0)),
         expert_rules=expert_rules,
         feat2idx=feat2idx,
         ig_steps=int(config.get("ig_steps", 20)),
@@ -987,18 +1523,20 @@ def _run_mysa_core(prepared: Dict[str, Any], config: Dict) -> Dict:
     best = {"val_cindex": 0.0, "epoch": -1}
     epochs = int(config.get("epochs", 200))
     for ep in range(1, epochs + 1):
-        lm = ls = le = 0.0
+        lm = ls = le = lt = 0.0
         steps = 0
         for batch in train_loader:
-            lmm, lss, lee = trainer.step(batch)
+            lmm, lss, lee, ltex = trainer.step(batch)
             lm += lmm
             ls += lss
             le += lee
+            lt += ltex
             steps += 1
         steps = max(steps, 1)
         lm /= steps
         ls /= steps
         le /= steps
+        lt /= steps
 
         val_c = trainer.evaluate_cindex(val_loader, dur_va, evt_va)
         trainer.sched.step(1.0 - val_c)
@@ -1007,7 +1545,9 @@ def _run_mysa_core(prepared: Dict[str, Any], config: Dict) -> Dict:
             best = {"val_cindex": val_c, "epoch": ep}
             torch.save(model.state_dict(), "model.pt")
 
-        print(f"[MySA] Ep{ep:03d}  NLL={lm:.4f}  Smooth={ls:.4f}  Expert={le:.4f}  | Val C-index={val_c:.4f}")
+        print(
+            f"[MySA] Ep{ep:03d}  NLL={lm:.4f}  Smooth={ls:.4f}  Expert={le:.4f}  TEXGI-Smooth={lt:.4f}  | Val C-index={val_c:.4f}"
+        )
 
     device = trainer.device
     model.eval()
@@ -1015,7 +1555,7 @@ def _run_mysa_core(prepared: Dict[str, Any], config: Dict) -> Dict:
     with torch.no_grad():
         for batch in val_loader:
             Xb, _, _, maskb = trainer._unpack_batch(batch)
-            Xb = Xb.to(device, non_blocking=True)
+            Xb = trainer._move_to_device(Xb)
             maskb_t = maskb.to(device, non_blocking=True) if maskb is not None else None
             hb = trainer._model_forward(Xb, maskb_t).detach().cpu().numpy()
             all_h.append(hb)
