@@ -1,7 +1,7 @@
 
 # run_models.py — MySA-integrated Workbench (drop-in replacement)
 # This page supports: CoxTime, DeepSurv, DeepHit, and MySA (TEXGI).
-# - Adds two loss-weight sliders (lambda_smooth, lambda_expert)
+# - Adds three loss-weight sliders (lambda_smooth, lambda_expert, lambda_texgi_smooth)
 # - Adds an editable Expert Rules table (relation/sign/min_mag/weight)
 # - Shows TEXGI Feature Importance (Top-K + expand to all), and allows downloading time-dependent attributions.
 
@@ -151,6 +151,7 @@ def _qhelp_md(key: str) -> str:
         # MySA Regularization & Priors
         "lambda_expert":  "The weight for the expert prior penalty (λ_expert). A larger value enforces stronger adherence to expert rules/importance; too large may sacrifice predictive performance.",
         "lambda_smooth":  "The weight for smoothness in the time dimension (λ_smooth). Makes explanations smoother across adjacent time points; too large may mask true time-dependent effects.",
+        "lambda_texgi_smooth": "Additional smoothness applied directly to TEXGI attributions across neighboring time bins. Helps keep explanations stable when modalities introduce high-variance signals.",
         "fast_mode":      "Acceleration mode: Uses a lightweight generator and approximate TEXGI for a quick preview of the expert prior's effect. Results may differ slightly from the full version.",
         "ig_steps":       "The number of integration steps for calculating Integrated Gradients (TEXGI). Larger is more accurate but slower (commonly 16~64).",
 
@@ -494,10 +495,35 @@ def _build_multimodal_sources(config: dict) -> Optional[Dict[str, Any]]:
 
     tab_df = getattr(dm, "tabular_df", None)
     if tab_df is not None:
+        cfg_feats = config.get("feature_cols")
+        if isinstance(cfg_feats, str):
+            cfg_feats = [cfg_feats]
+        elif cfg_feats is not None:
+            try:
+                cfg_feats = list(cfg_feats)
+            except TypeError:
+                cfg_feats = None
+
+        exclude_cols = {id_col}
+        time_col = config.get("time_col")
+        event_col = config.get("event_col")
+        if isinstance(time_col, str):
+            exclude_cols.add(time_col)
+        if isinstance(event_col, str):
+            exclude_cols.add(event_col)
+
+        if cfg_feats is None:
+            tab_feats = [c for c in tab_df.columns if c not in exclude_cols]
+        else:
+            tab_cols = set(tab_df.columns)
+            tab_feats = [c for c in cfg_feats if c in tab_cols and c not in exclude_cols]
+            if not tab_feats:
+                tab_feats = [c for c in tab_df.columns if c not in exclude_cols]
+
         sources["tabular"] = {
             "data": tab_df.copy(),
             "id_col": id_col,
-            "feature_cols": config.get("feature_cols"),
+            "feature_cols": tab_feats,
         }
 
     if has_image:
@@ -509,6 +535,17 @@ def _build_multimodal_sources(config: dict) -> Optional[Dict[str, Any]]:
             "id_col": img_id,
             "feature_cols": img_feats,
         }
+        raw_manifest = st.session_state.get("mm_image_manifest")
+        raw_root = st.session_state.get("mm_image_root_raw")
+        path_col = st.session_state.get("mm_image_path_col", "image")
+        id_override = st.session_state.get("mm_image_id_col", img_id)
+        if raw_manifest is not None and raw_root:
+            sources["image"]["raw_assets"] = {
+                "manifest": raw_manifest.copy(),
+                "root": raw_root,
+                "path_col": path_col,
+                "id_col": id_override,
+            }
 
     if has_sensor:
         sens_df = dm.sensor_df
@@ -519,8 +556,36 @@ def _build_multimodal_sources(config: dict) -> Optional[Dict[str, Any]]:
             "id_col": sens_id,
             "feature_cols": sens_feats,
         }
+        raw_manifest = st.session_state.get("mm_sensor_manifest")
+        raw_root = st.session_state.get("mm_sensor_root_raw")
+        path_col = st.session_state.get("mm_sensor_path_col", "file")
+        id_override = st.session_state.get("mm_sensor_id_col", sens_id)
+        if raw_manifest is not None and raw_root:
+            sources["sensor"]["raw_assets"] = {
+                "manifest": raw_manifest.copy(),
+                "root": raw_root,
+                "path_col": path_col,
+                "id_col": id_override,
+            }
 
-    extra_modalities = [k for k in ("image", "sensor") if k in sources and sources[k]["feature_cols"]]
+    def _has_features(info: Any) -> bool:
+        """Return True when a modality descriptor contains non-empty features."""
+        if not isinstance(info, dict):
+            return False
+        if info.get("raw_assets"):
+            return True
+        cols = info.get("feature_cols")
+        if cols is None:
+            return False
+        if isinstance(cols, (list, tuple)):
+            return len(cols) > 0
+        # Support pandas Index / Series etc.
+        try:
+            return bool(len(cols))
+        except TypeError:
+            return False
+
+    extra_modalities = [k for k in ("image", "sensor") if _has_features(sources.get(k))]
     if not extra_modalities:
         return None
 
@@ -1131,6 +1196,10 @@ def show():
                                 batch_size=int(img_bs),
                                 num_workers=0,
                             )
+                        st.session_state["mm_image_manifest"] = img_manifest_df.copy()
+                        st.session_state["mm_image_root_raw"] = img_root
+                        st.session_state["mm_image_path_col"] = "image"
+                        st.session_state["mm_image_id_col"] = img_id_col
                         if img_id_col != id_col and image_df is not None and img_id_col in image_df.columns:
                             image_df = image_df.rename(columns={img_id_col: id_col})
                         if image_df is not None and id_col in image_df.columns:
@@ -1157,6 +1226,10 @@ def show():
                                 resample_hz=float(sens_resample),
                                 max_rows_per_file=int(sens_max_rows),
                             )
+                        st.session_state["mm_sensor_manifest"] = sens_manifest_df.copy()
+                        st.session_state["mm_sensor_root_raw"] = sens_root
+                        st.session_state["mm_sensor_path_col"] = "file"
+                        st.session_state["mm_sensor_id_col"] = sens_id_col
                         if sens_id_col != id_col and sensor_df is not None and sens_id_col in sensor_df.columns:
                             sensor_df = sensor_df.rename(columns={sens_id_col: id_col})
                         if sensor_df is not None and id_col in sensor_df.columns:
@@ -1169,11 +1242,31 @@ def show():
 
                 st.session_state["mm_tabular_df"] = tab_df
 
+                def _prep_for_merge(df):
+                    if df is None or id_col not in df.columns:
+                        return None
+                    tmp = df.copy()
+                    tmp[id_col] = tmp[id_col].astype(str)
+                    drop_cols = [c for c in ("duration", "event") if c in tmp.columns]
+                    if drop_cols:
+                        tmp = tmp.drop(columns=drop_cols)
+                    feat_cols = [c for c in tmp.columns if c != id_col]
+                    if not feat_cols:
+                        return None
+                    for col in feat_cols:
+                        tmp[col] = pd.to_numeric(tmp[col], errors="coerce")
+                    if tmp[id_col].duplicated().any():
+                        agg = tmp.groupby(id_col, as_index=False)[feat_cols].mean()
+                        tmp = agg
+                    return tmp
+
                 combined = tab_df.copy()
-                if image_df is not None and id_col in image_df.columns:
-                    combined = combined.merge(image_df, on=id_col, how="left")
-                if sensor_df is not None and id_col in sensor_df.columns:
-                    combined = combined.merge(sensor_df, on=id_col, how="left")
+                img_merge = _prep_for_merge(image_df)
+                if img_merge is not None:
+                    combined = combined.merge(img_merge, on=id_col, how="left")
+                sens_merge = _prep_for_merge(sensor_df)
+                if sens_merge is not None:
+                    combined = combined.merge(sens_merge, on=id_col, how="left")
 
                 combined_display = combined
                 if id_col in combined_display.columns:
@@ -1443,7 +1536,7 @@ def show():
     # ===================== 4) TEXGISA regularizers & expert rules ================
     if algo == "TEXGISA":
         st.markdown("### Regularizers")
-        r1, r2 = st.columns(2)
+        r1, r2, r3 = st.columns(3)
         with r1:
             lambda_smooth = field_with_help(
                 st.number_input, "λ_smooth (temporal smoothness)", "lambda_smooth",
@@ -1453,7 +1546,18 @@ def show():
             lambda_expert = field_with_help(
                 st.number_input, "λ_expert (expert prior penalty)", "lambda_expert",
                 0.0, 10.0, 0.10, step=0.05, format="%.2f"
-    )
+            )
+        with r3:
+            lambda_texgi_smooth = field_with_help(
+                st.number_input,
+                "λ_texgi_smooth (TEXGI temporal smoothness)",
+                "lambda_texgi_smooth",
+                0.0,
+                1.0,
+                0.05,
+                step=0.01,
+                format="%.2f",
+            )
 
         st.markdown("### Expert Rules")
         # Prepare blank editor with choices
@@ -1526,6 +1630,7 @@ def show():
         config.update({
             "lambda_smooth": float(lambda_smooth),
             "lambda_expert": float(lambda_expert),
+            "lambda_texgi_smooth": float(lambda_texgi_smooth),
             "expert_rules": expert_rules,
             "ig_steps": int(ig_steps),
             "latent_dim": int(latent_dim),
