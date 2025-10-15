@@ -1,7 +1,7 @@
 # Update 2024-10-15
 
 ## UI Enhancements
-- Added contextual ❔ help popovers to every data ingestion widget (tabular, image, sensor, and multimodal assets) so users know which files to prepare and which algorithms can consume them.
+- Added contextual ❔ hover tooltips to every data ingestion widget (tabular, image, sensor, and multimodal assets) so users know which files to prepare and which algorithms can consume them without disruptive popover clicks.
 - Clarified throughout the wizards that only TEXGISA offers end-to-end multimodal optimisation, while other algorithms rely on pre-fused tables.
 - Improved guidance for manifest ID fields and multimodal upload panels to reduce ambiguity and highlight required identifiers.
 

@@ -14,6 +14,76 @@ from typing import Any, Dict, List, Optional, Sequence, Set
 from models import coxtime, deepsurv, deephit
 from models.mysa import run_mysa as run_texgisa
 from utils.identifiers import canonicalize_series
+from html import escape
+
+_TOOLTIP_STYLE = """
+<style>
+.help-tooltip {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    border: 1px solid #7b8794;
+    color: #7b8794;
+    font-weight: 700;
+    font-size: 0.72rem;
+    margin-left: 0.35rem;
+    cursor: default;
+    background: #ffffff10;
+}
+
+.help-tooltip::after,
+.help-tooltip::before {
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.18s ease-in-out;
+}
+
+.help-tooltip:hover::after,
+.help-tooltip:focus::after,
+.help-tooltip:hover::before,
+.help-tooltip:focus::before {
+    opacity: 1;
+}
+
+.help-tooltip::after {
+    content: attr(data-tip);
+    position: absolute;
+    min-width: 200px;
+    max-width: 320px;
+    background: #1f2933;
+    color: #f5f7fa;
+    padding: 0.6rem 0.75rem;
+    border-radius: 0.5rem;
+    box-shadow: 0 10px 25px rgba(15, 23, 42, 0.22);
+    top: 125%;
+    right: 0;
+    white-space: pre-wrap;
+    line-height: 1.4;
+    z-index: 9999;
+}
+
+.help-tooltip::before {
+    content: "";
+    position: absolute;
+    top: 108%;
+    right: 8px;
+    border-left: 7px solid transparent;
+    border-right: 7px solid transparent;
+    border-bottom: 7px solid #1f2933;
+}
+</style>
+"""
+
+
+def _ensure_help_tooltip_css():
+    if not st.session_state.get("_help_tooltip_css_injected", False):
+        st.markdown(_TOOLTIP_STYLE, unsafe_allow_html=True)
+        st.session_state["_help_tooltip_css_injected"] = True
+
 def _md_explain(text: str, size: str = "1.12rem", line_height: float = 1.6):
     """把解释文字放大显示。size 可改为 1.2rem/1.3rem 等。"""
     st.markdown(
@@ -180,32 +250,21 @@ def field_with_help(control_fn, label, help_key: str, *args, **kwargs):
     try:
         return control_fn(label, *args, help=help_msg, **kwargs)
     except TypeError:
-        # 2) 兜底：没有 help= 的控件，用右侧 ❔（popover→button）
+        # 2) 兜底：没有 help= 的控件，用右侧 ❔（hover tooltip）
         c1, c2 = st.columns([0.96, 0.04])  # 右侧给足空间，避免被吃掉
         with c1:
             val = control_fn(label, *args, **kwargs)
         with c2:
-            try:
-                # 新版 popover
-                with st.popover("❔"):
-                    st.markdown(help_msg)
-            except Exception:
-                # 老版：按钮点击在控件下方显示说明
-                if st.button("❔", key=f"help_{help_key}"):
-                    st.info(help_msg)
+            _render_help_tooltip(help_msg, f"help_{help_key}")
         return val
 
 
-def _render_help_popover(text: str, key: str):
-    """Render a small ❔ button that reveals explanatory Markdown when clicked."""
-    try:
-        with st.popover("❔", key=key):
-            st.markdown(text)
-    except Exception:
-        # Streamlit versions without popover fall back to a plain button that
-        # appends the explanation inline.
-        if st.button("❔", key=f"{key}_btn"):
-            st.info(text)
+def _render_help_tooltip(text: str, key: str):
+    """Render a hover-based ❔ tooltip with the supplied Markdown converted to plain text."""
+    _ensure_help_tooltip_css()
+    sanitized = escape(text, quote=True).replace("\n", "&#10;")
+    html = f"<span class='help-tooltip' id='{escape(key)}' tabindex='0' data-tip='{sanitized}'>?</span>"
+    st.markdown(html, unsafe_allow_html=True)
 
 
 def uploader_with_help(label: str, *, key: str, help_text: str, column_ratio: Sequence[float] | None = None, **kwargs):
@@ -216,7 +275,7 @@ def uploader_with_help(label: str, *, key: str, help_text: str, column_ratio: Se
     with cols[0]:
         widget = st.file_uploader(label, key=key, **kwargs)
     with cols[1]:
-        _render_help_popover(help_text, f"{key}_help")
+        _render_help_tooltip(help_text, f"{key}_help")
     return widget
 
 
