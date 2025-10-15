@@ -26,3 +26,16 @@ def test_canonicalize_identifier_normalizes_numeric_strings(value, expected):
 )
 def test_canonicalize_identifier_preserves_non_integer_strings(value, expected):
     assert canonicalize_identifier(value) == expected
+
+
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        ("images/PT_0001.png", "PT_0001"),
+        ("sensor_sequences/0005.csv", "5"),
+        ("PT_0002.jpg", "PT_0002"),
+        ("reports/followup.json", "followup"),
+    ],
+)
+def test_canonicalize_identifier_strips_asset_paths_and_extensions(value, expected):
+    assert canonicalize_identifier(value) == expected
