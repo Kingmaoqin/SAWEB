@@ -23,6 +23,8 @@ from typing import Dict, Iterable, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
+from utils.identifiers import canonicalize_identifier
+
 # Optional SciPy import (not strictly required; NumPy covers the basics)
 # import scipy.signal as sps
 
@@ -376,7 +378,8 @@ def sensors_to_dataframe(
         "event":    pd.Series(evt_list, dtype="int32"),
     })
     if id_list is not None:
-        de.insert(0, id_col, pd.Series([str(v) for v in id_list]))
+        ids = pd.Series([canonicalize_identifier(v) for v in id_list], dtype="string")
+        de.insert(0, id_col, ids)
 
     # Safety check
     if len(de) != len(feat_df):

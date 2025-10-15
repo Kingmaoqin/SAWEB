@@ -28,6 +28,8 @@ except Exception as e:
         "and ensure the version matches your PyTorch build."
     ) from e
 
+from utils.identifiers import canonicalize_series
+
 
 def _resolve_device(device: Optional[str] = None) -> str:
     if device:
@@ -225,7 +227,8 @@ def images_to_dataframe(
 
     # 3) Preserve the ID column first when available for cross-modality joins
     if id_col and id_col in kept.columns:
-        df.insert(0, id_col, kept[id_col].astype(str).to_numpy())
+        ids = canonicalize_series(kept[id_col])
+        df.insert(0, id_col, ids)
 
     # 4) Retain additional numeric columns from the manifest
     extra_cols = [c for c in kept.columns if c not in {image_col, duration_col, event_col, "_orig_idx"}]

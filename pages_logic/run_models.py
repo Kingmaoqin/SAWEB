@@ -13,6 +13,7 @@ from typing import Any, Dict, Optional
 
 from models import coxtime, deepsurv, deephit
 from models.mysa import run_mysa as run_texgisa
+from utils.identifiers import canonicalize_series
 def _md_explain(text: str, size: str = "1.12rem", line_height: float = 1.6):
     """把解释文字放大显示。size 可改为 1.2rem/1.3rem 等。"""
     st.markdown(
@@ -475,6 +476,13 @@ def _build_expert_rules_from_editor(df_rules):
             rule["min_mag"] = min_mag
         rules.append(rule)
     return {"rules": rules}
+
+
+def _canonicalize_id_column(df: Optional[pd.DataFrame], col: Optional[str]) -> Optional[pd.DataFrame]:
+    if df is None or not col or col not in df.columns:
+        return df
+    df[col] = canonicalize_series(df[col])
+    return df
 
 
 def _build_multimodal_sources(config: dict) -> Optional[Dict[str, Any]]:
@@ -1070,20 +1078,30 @@ def show():
                     )
 
                 if st.button("Load Multimodal Data", key="mm_load_processed"):
-                    combined = st.session_state.get("mm_tabular_df")
-                    if combined is None:
+                    base_tab = st.session_state.get("mm_tabular_df")
+                    if base_tab is None:
                         st.warning("Tabular data is required for alignment.")
                     else:
+                        tab_df = base_tab.copy()
+                        _canonicalize_id_column(tab_df, tab_id)
+                        st.session_state["mm_tabular_df"] = tab_df
+                        combined = tab_df
                         if "mm_image_df" in st.session_state and img_id:
+                            img_df = st.session_state["mm_image_df"].copy()
+                            _canonicalize_id_column(img_df, img_id)
+                            st.session_state["mm_image_df"] = img_df
                             combined = combined.merge(
-                                st.session_state["mm_image_df"],
+                                img_df,
                                 left_on=tab_id,
                                 right_on=img_id,
                                 how="left",
                             )
                         if "mm_sensor_df" in st.session_state and sens_id:
+                            sens_df = st.session_state["mm_sensor_df"].copy()
+                            _canonicalize_id_column(sens_df, sens_id)
+                            st.session_state["mm_sensor_df"] = sens_df
                             combined = combined.merge(
-                                st.session_state["mm_sensor_df"],
+                                sens_df,
                                 left_on=tab_id,
                                 right_on=sens_id,
                                 how="left",
@@ -1175,7 +1193,7 @@ def show():
                     st.error(f"Tabular CSV must contain the ID column '{id_col}'.")
                     st.stop()
 
-                tab_df[id_col] = tab_df[id_col].astype(str)
+                _canonicalize_id_column(tab_df, id_col)
 
                 st.session_state["mm_image_df"] = None
                 st.session_state["mm_sensor_df"] = None
@@ -1203,7 +1221,7 @@ def show():
                         if img_id_col != id_col and image_df is not None and img_id_col in image_df.columns:
                             image_df = image_df.rename(columns={img_id_col: id_col})
                         if image_df is not None and id_col in image_df.columns:
-                            image_df[id_col] = image_df[id_col].astype(str)
+                            _canonicalize_id_column(image_df, id_col)
                         st.session_state["mm_image_df"] = image_df
                         st.dataframe(image_df.head(), use_container_width=True)
                     except Exception as exc:
@@ -1233,7 +1251,7 @@ def show():
                         if sens_id_col != id_col and sensor_df is not None and sens_id_col in sensor_df.columns:
                             sensor_df = sensor_df.rename(columns={sens_id_col: id_col})
                         if sensor_df is not None and id_col in sensor_df.columns:
-                            sensor_df[id_col] = sensor_df[id_col].astype(str)
+                            _canonicalize_id_column(sensor_df, id_col)
                         st.session_state["mm_sensor_df"] = sensor_df
                         st.dataframe(sensor_df.head(), use_container_width=True)
                     except Exception as exc:
@@ -1246,7 +1264,7 @@ def show():
                     if df is None or id_col not in df.columns:
                         return None
                     tmp = df.copy()
-                    tmp[id_col] = tmp[id_col].astype(str)
+                    _canonicalize_id_column(tmp, id_col)
                     drop_cols = [c for c in ("duration", "event") if c in tmp.columns]
                     if drop_cols:
                         tmp = tmp.drop(columns=drop_cols)

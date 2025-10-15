@@ -69,6 +69,7 @@ from multimodal_assets import (
     build_sensor_paths_for_ids,
     SensorSpec,
 )
+from utils.identifiers import canonicalize_series
 
 __all__ = ["run_mysa", "run_texgisa"]
 
@@ -987,7 +988,7 @@ def _align_modality_features(
         return np.zeros((len(base_ids), 0), dtype=np.float32), np.zeros((len(base_ids),), dtype=np.float32), []
 
     sub = df[[id_col] + feature_cols].copy()
-    sub[id_col] = sub[id_col].astype(str)
+    sub[id_col] = canonicalize_series(sub[id_col]).fillna("")
     for col in feature_cols:
         sub[col] = pd.to_numeric(sub[col], errors="coerce")
     sub = sub.set_index(id_col)
@@ -1061,6 +1062,8 @@ def _prepare_multimodal_inputs(data: pd.DataFrame, config: Dict, multimodal_cfg:
     if id_col not in tab_df.columns:
         raise ValueError(f"Tabular modality must contain id column '{id_col}'.")
 
+    tab_df[id_col] = canonicalize_series(tab_df[id_col]).fillna("")
+
     required_cols = {"duration", "event"}
     if not required_cols.issubset(tab_df.columns):
         missing = required_cols - set(tab_df.columns)
@@ -1073,6 +1076,8 @@ def _prepare_multimodal_inputs(data: pd.DataFrame, config: Dict, multimodal_cfg:
 
     n_bins = int(config.get("n_bins", 30))
     df = make_intervals(tab_df, duration_col="duration", event_col="event", n_bins=n_bins, method="quantile")
+    if id_col in df.columns:
+        df[id_col] = canonicalize_series(df[id_col]).fillna("")
     num_bins = int(df["interval_number"].max())
 
     base_ids = df[id_col].astype(str)
@@ -1102,6 +1107,7 @@ def _prepare_multimodal_inputs(data: pd.DataFrame, config: Dict, multimodal_cfg:
         mod_id = info.get("id_col") or id_col
         if mod_id not in df_mod.columns:
             raise ValueError(f"Modality '{name}' must contain id column '{mod_id}'.")
+        df_mod[mod_id] = canonicalize_series(df_mod[mod_id]).fillna("")
         feat_cols = info.get("feature_cols")
         if not feat_cols:
             feat_cols = [c for c in df_mod.columns if c not in {mod_id, "duration", "event"}]
@@ -1203,6 +1209,8 @@ def _prepare_multimodal_inputs_raw(
     if id_col not in tab_df.columns:
         raise ValueError(f"Tabular modality must contain id column '{id_col}'.")
 
+    tab_df[id_col] = canonicalize_series(tab_df[id_col]).fillna("")
+
     required_cols = {"duration", "event"}
     if not required_cols.issubset(tab_df.columns):
         missing = required_cols - set(tab_df.columns)
@@ -1215,6 +1223,8 @@ def _prepare_multimodal_inputs_raw(
 
     n_bins = int(config.get("n_bins", 30))
     df = make_intervals(tab_df, duration_col="duration", event_col="event", n_bins=n_bins, method="quantile")
+    if id_col in df.columns:
+        df[id_col] = canonicalize_series(df[id_col]).fillna("")
     num_bins = int(df["interval_number"].max())
 
     base_ids = df[id_col].astype(str)
@@ -1242,7 +1252,7 @@ def _prepare_multimodal_inputs_raw(
         id_override = image_raw.get("id_col") or image_info.get("id_col") or id_col
         if manifest is not None and root:
             manifest = manifest.copy()
-            manifest[id_override] = manifest[id_override].astype(str)
+            manifest[id_override] = canonicalize_series(manifest[id_override]).fillna("")
             image_paths = build_image_paths_for_ids(
                 id_list,
                 manifest=manifest,
@@ -1263,7 +1273,7 @@ def _prepare_multimodal_inputs_raw(
         id_override = sensor_raw.get("id_col") or sensor_info.get("id_col") or id_col
         if manifest is not None and root:
             manifest = manifest.copy()
-            manifest[id_override] = manifest[id_override].astype(str)
+            manifest[id_override] = canonicalize_series(manifest[id_override]).fillna("")
             sensor_paths, sensor_spec = build_sensor_paths_for_ids(
                 id_list,
                 manifest=manifest,

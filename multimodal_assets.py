@@ -22,6 +22,8 @@ import torch
 from PIL import Image
 from torch.utils.data import Dataset
 
+from utils.identifiers import canonicalize_identifier
+
 try:  # torchvision is optional during documentation builds
     from torchvision import transforms
 except Exception as exc:  # pragma: no cover - torchvision is required at runtime
@@ -48,7 +50,7 @@ def _resolve_asset_paths(
     lookup: Dict[str, str] = {}
     norm_root = os.path.abspath(root)
     for _, row in manifest.iterrows():
-        key = str(row[id_col]).strip()
+        key = canonicalize_identifier(row[id_col])
         if not key:
             continue
         raw_path = str(row[path_col]).strip()
@@ -103,7 +105,7 @@ class AssetBackedMultiModalDataset(Dataset):
     def __init__(
         self,
         *,
-        ids: Sequence[str],
+        ids: Sequence[Optional[str]],
         tabular: np.ndarray,
         labels: np.ndarray,
         masks: np.ndarray,
@@ -117,7 +119,7 @@ class AssetBackedMultiModalDataset(Dataset):
         if tabular.shape[0] != len(ids):
             raise ValueError("Tabular matrix and id list must align in length.")
 
-        self.ids = [str(i) for i in ids]
+        self.ids = [canonicalize_identifier(i) or "" for i in ids]
         self.tabular = torch.from_numpy(tabular.astype(np.float32, copy=False))
         self.labels = torch.from_numpy(labels.astype(np.float32, copy=False))
         self.masks = torch.from_numpy(masks.astype(np.float32, copy=False))
@@ -226,7 +228,7 @@ class AssetBackedMultiModalDataset(Dataset):
 
 
 def build_image_paths_for_ids(
-    ids: Sequence[str],
+    ids: Sequence[Optional[str]],
     *,
     manifest: pd.DataFrame,
     id_col: str,
@@ -234,11 +236,15 @@ def build_image_paths_for_ids(
     root: str,
 ) -> List[Optional[str]]:
     lookup = _resolve_asset_paths(manifest, id_col=id_col, path_col=path_col, root=root)
-    return [lookup.get(str(i)) for i in ids]
+    out: List[Optional[str]] = []
+    for i in ids:
+        key = canonicalize_identifier(i)
+        out.append(lookup.get(key) if key else None)
+    return out
 
 
 def build_sensor_paths_for_ids(
-    ids: Sequence[str],
+    ids: Sequence[Optional[str]],
     *,
     manifest: pd.DataFrame,
     id_col: str,
@@ -246,7 +252,10 @@ def build_sensor_paths_for_ids(
     root: str,
 ) -> Tuple[List[Optional[str]], Optional[SensorSpec]]:
     lookup = _resolve_asset_paths(manifest, id_col=id_col, path_col=path_col, root=root)
-    paths = [lookup.get(str(i)) for i in ids]
+    paths: List[Optional[str]] = []
+    for i in ids:
+        key = canonicalize_identifier(i)
+        paths.append(lookup.get(key) if key else None)
     existing = [p for p in paths if p]
     if not existing:
         return paths, None
