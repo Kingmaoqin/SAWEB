@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import re
 from typing import Any, Optional
 
 import numpy as np
@@ -46,7 +47,16 @@ def canonicalize_identifier(value: Any) -> Optional[str]:
             return str(int(fv))
         return format(fv, "g")
 
+    if _NUMERIC_STRING_PATTERN.fullmatch(text):
+        try:
+            return str(int(text))
+        except ValueError:
+            return text
+
     return text
+
+
+_NUMERIC_STRING_PATTERN = re.compile(r"[+-]?[0-9]+")
 
 
 def canonicalize_series(series: pd.Series) -> pd.Series:
