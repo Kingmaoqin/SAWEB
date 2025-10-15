@@ -26,3 +26,4 @@
 ## 后续建议
 - 若未来支持其它资产类型，可在 `_ASSET_EXTENSIONS` 中追加扩展名。
 - UI 层仍建议提示用户优先提供显式 ID 列，以减少模糊匹配需求。
+- 新增 `analysis/multimodal_alignment_debugger.py` 工具脚本，可用于快速核对各模态的规范化 ID 与资产路径是否匹配，避免再次出现合并后整列缺失的问题。
