@@ -9,7 +9,7 @@ import streamlit as st
 import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Sequence, Set
 
 from models import coxtime, deepsurv, deephit
 from models.mysa import run_mysa as run_texgisa
@@ -1260,29 +1260,49 @@ def show():
 
                 st.session_state["mm_tabular_df"] = tab_df
 
-                def _prep_for_merge(df):
+                def _prep_for_merge(df, *, preserve_cols: Optional[Sequence[str]] = None):
                     if df is None or id_col not in df.columns:
                         return None
                     tmp = df.copy()
                     _canonicalize_id_column(tmp, id_col)
+                    preserve: Set[str] = {c for c in (preserve_cols or []) if c and c in tmp.columns}
                     drop_cols = [c for c in ("duration", "event") if c in tmp.columns]
                     if drop_cols:
                         tmp = tmp.drop(columns=drop_cols)
                     feat_cols = [c for c in tmp.columns if c != id_col]
                     if not feat_cols:
                         return None
+                    adaptive_numeric: List[str] = []
                     for col in feat_cols:
-                        tmp[col] = pd.to_numeric(tmp[col], errors="coerce")
+                        if col in preserve:
+                            continue
+                        converted = pd.to_numeric(tmp[col], errors="coerce")
+                        # Preserve columns that lose all information when coerced (e.g. asset paths).
+                        if converted.notna().sum() == 0 and tmp[col].notna().sum() > 0:
+                            preserve.add(col)
+                            continue
+                        tmp[col] = converted
+                        adaptive_numeric.append(col)
                     if tmp[id_col].duplicated().any():
-                        agg = tmp.groupby(id_col, as_index=False)[feat_cols].mean()
-                        tmp = agg
+                        agg_map: Dict[str, str] = {}
+                        for col in feat_cols:
+                            if col in preserve:
+                                agg_map[col] = "first"
+                            else:
+                                agg_map[col] = "mean"
+                        tmp = tmp.groupby(id_col, as_index=False).agg(agg_map)
+                    # Ensure preserved columns keep their original dtype/order alongside numeric ones.
+                    cols_order = [id_col] + [c for c in feat_cols if c in tmp.columns and c != id_col]
+                    tmp = tmp.loc[:, [c for c in cols_order if c in tmp.columns]]
                     return tmp
 
                 combined = tab_df.copy()
-                img_merge = _prep_for_merge(image_df)
+                img_preserve = [st.session_state.get("mm_image_path_col")] if "mm_image_path_col" in st.session_state else None
+                img_merge = _prep_for_merge(image_df, preserve_cols=img_preserve)
                 if img_merge is not None:
                     combined = combined.merge(img_merge, on=id_col, how="left")
-                sens_merge = _prep_for_merge(sensor_df)
+                sens_preserve = [st.session_state.get("mm_sensor_path_col")] if "mm_sensor_path_col" in st.session_state else None
+                sens_merge = _prep_for_merge(sensor_df, preserve_cols=sens_preserve)
                 if sens_merge is not None:
                     combined = combined.merge(sens_merge, on=id_col, how="left")
 
