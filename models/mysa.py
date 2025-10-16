@@ -558,8 +558,13 @@ def integrated_gradients_time(
         Xpath.requires_grad_(True)
         hazards = f(Xpath, **kwargs) if kwargs else f(Xpath)  # [B, T]
         out = hazards[:, hazard_index]          # focus on bin t
-        grads = torch.autograd.grad(out.sum(), Xpath, retain_graph=False, create_graph=False)[0]
-        atts += grads
+        grads = torch.autograd.grad(
+            out.sum(),
+            Xpath,
+            retain_graph=False,
+            create_graph=torch.is_grad_enabled(),
+        )[0]
+        atts = atts + grads
     atts = atts * Xdiff / float(len(alphas))
     return atts
 
