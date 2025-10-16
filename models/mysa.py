@@ -20,7 +20,7 @@
 #   run_texgisa(...)  # alias for compatibility with existing UI
 # =============================================================================
 
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Tuple, Any, Sequence
 import numpy as np
 import pandas as pd
 import torch
@@ -89,15 +89,18 @@ def masked_bce_nll(hazards: torch.Tensor, labels: torch.Tensor, masks: torch.Ten
     return masked.sum() / denom
 
 
-def smooth_l1_temporal(hazards: torch.Tensor, lambda_smooth: float) -> torch.Tensor:
+def attribution_temporal_l1(phi_tbd: torch.Tensor) -> torch.Tensor:
+    """L1 temporal smoothness penalty on TEXGI attributions.
+
+    Implements Eq.(smooth) from the paper: sum_{i,b,d} |phi_{t+1,b,d} - phi_{t,b,d}|.
+    Returns the raw (unweighted) penalty value.
     """
-    Total-variation-like temporal smoothing on hazards.
-    hazards: [B, T]
-    """
-    if lambda_smooth <= 0:
-        return hazards.new_tensor(0.0)
-    diff = hazards[:, 1:] - hazards[:, :-1]
-    return lambda_smooth * F.smooth_l1_loss(diff, torch.zeros_like(diff))
+    if phi_tbd.dim() != 3:
+        raise ValueError("phi tensor must have shape [T, B, D] for temporal smoothing")
+    if phi_tbd.size(0) <= 1:
+        return phi_tbd.new_zeros(())
+    diff = phi_tbd[1:] - phi_tbd[:-1]
+    return diff.abs().sum()
 
 
 # -------------------- Adversarial Extreme Baseline Generator ------------------
@@ -638,54 +641,57 @@ def _aggregate_importance(phi_tbd: torch.Tensor) -> Tuple[torch.Tensor, torch.Te
     return imp_abs, imp_dir
 
 
-def expert_penalty(
-    phi_tbd: torch.Tensor,                  # [T,B,D]
-    expert_config: Dict[str, Any],          # rules per feature name
-    feat2idx: Dict[str, int],
-) -> torch.Tensor:
-    """
-    Support rules:
-      - relation: '>=mean' or '<=mean'  (relative to global mean importance of all features)
-      - sign: -1, 0, +1                 (directional expectation)
-      - min_mag: float                   (minimum |directional mean|)
-      - weight: float                    (per feature weight in penalty aggregation)
-    expert_config example:
-      {
-        "rules": [
-           {"feature":"AGE", "relation":">=mean", "sign":+1, "min_mag":0.01, "weight":1.0},
-           {"feature":"BUN", "relation":"<=mean", "sign":0, "weight":0.5}
-        ]
-      }
-    """
-    device = phi_tbd.device
-    imp_abs, imp_dir = _aggregate_importance(phi_tbd)  # [D], [D]
-    mean_abs = imp_abs.mean()
+def _resolve_important_feature_indices(
+    expert_config: Optional[Dict[str, Any]], feat2idx: Dict[str, int]
+) -> List[int]:
+    """Extract the set I (important features) from the expert configuration."""
+    if not expert_config:
+        return []
 
-    total = torch.zeros((), device=device)
-    rules = expert_config.get("rules", []) if expert_config else []
-    for rule in rules:
-        fname = rule.get("feature")
-        if fname not in feat2idx:
+    names: List[str] = []
+    for key in ("important_features", "important", "I"):
+        val = expert_config.get(key)
+        if isinstance(val, (list, tuple, set)):
+            names.extend(str(v) for v in val)
+
+    # Backward compatibility: treat old rule entries with relation >=mean as important.
+    for rule in expert_config.get("rules", []) if isinstance(expert_config.get("rules"), list) else []:
+        if not isinstance(rule, dict):
             continue
-        j = feat2idx[fname]
-        w = float(rule.get("weight", 1.0))
+        fname = rule.get("feature")
+        if not fname:
+            continue
+        relation = str(rule.get("relation", "")).lower()
+        if relation in {">=mean", ">=avg", "important"} or bool(rule.get("important", False)):
+            names.append(str(fname))
 
-        # relation constraint
-        rel = rule.get("relation", None)
-        if rel == ">=mean":
-            total = total + w * F.relu(mean_abs - imp_abs[j])
-        elif rel == "<=mean":
-            total = total + w * F.relu(imp_abs[j] - mean_abs)
+    idx = {feat2idx[name] for name in names if name in feat2idx}
+    return sorted(idx)
 
-        # directional expectation
-        sign = int(rule.get("sign", 0))
-        if sign != 0:
-            total = total + w * F.relu(-sign * imp_dir[j])
 
-        # minimum magnitude on directional mean
-        min_mag = float(rule.get("min_mag", 0.0))
-        if min_mag > 0.0:
-            total = total + w * F.relu(min_mag - imp_dir[j].abs())
+def expert_penalty(phi_tbd: torch.Tensor, important_idx: Sequence[int]) -> torch.Tensor:
+    """Expert prior penalty Ω_expert(Φ) following Eq.(18) of the paper."""
+    if phi_tbd.dim() != 3:
+        raise ValueError("phi tensor must have shape [T, B, D] for expert penalty")
+
+    device = phi_tbd.device
+    # ||Φ_l||_2 across all time bins and batch elements
+    norms = torch.sqrt(phi_tbd.pow(2).sum(dim=(0, 1)) + 1e-12)  # [D]
+    if norms.numel() == 0:
+        return torch.zeros((), device=device)
+
+    bar_s = norms.mean()
+    total = torch.zeros((), device=device)
+
+    important_mask = torch.zeros_like(norms, dtype=torch.bool)
+    if important_idx:
+        important_tensor = torch.tensor(important_idx, device=device, dtype=torch.long)
+        important_mask[important_tensor] = True
+        total = total + F.relu(bar_s - norms[important_tensor]).sum()
+
+    non_important = ~important_mask
+    if non_important.any():
+        total = total + norms[non_important].sum()
 
     return total
 
@@ -700,7 +706,6 @@ class MySATrainer:
         device: Optional[str] = None,
         lambda_smooth: float = 0.0,
         lambda_expert: float = 0.0,
-        lambda_texgi_smooth: float = 0.0,
         expert_rules: Optional[Dict[str, Any]] = None,
         feat2idx: Optional[Dict[str, int]] = None,
         # TEXGI settings:
@@ -725,9 +730,9 @@ class MySATrainer:
 
         self.lambda_smooth = float(lambda_smooth)
         self.lambda_expert = float(lambda_expert)
-        self.lambda_texgi_smooth = float(lambda_texgi_smooth)
         self.expert_rules = expert_rules or {}
         self.feat2idx = feat2idx or {}
+        self.important_idx = _resolve_important_feature_indices(self.expert_rules, self.feat2idx)
 
         self.ig_steps = int(ig_steps)
         self.latent_dim = int(latent_dim)
@@ -809,7 +814,7 @@ class MySATrainer:
             modality_mask=self.modality_mask_ref
         )
 
-    def step(self, batch) -> Tuple[float, float, float, float]:
+    def step(self, batch) -> Tuple[float, float, float]:
         X, y, m, modality_mask = self._unpack_batch(batch)
         X = self._move_to_device(X)
         y = y.to(self.device, non_blocking=True)
@@ -824,15 +829,13 @@ class MySATrainer:
             hazards, embeddings = out, X if torch.is_tensor(X) else None
         hazards = hazards  # [B, T]
         loss_main = masked_bce_nll(hazards, y, m)
-        loss_smooth = smooth_l1_temporal(hazards, self.lambda_smooth)
-        loss = loss_main + loss_smooth
-
+        loss_smooth = hazards.new_tensor(0.0)
         loss_expert = hazards.new_tensor(0.0)
-        loss_texgi = hazards.new_tensor(0.0)
-        need_texgi = (self.lambda_expert > 0 and self.expert_rules and self.feat2idx) or self.lambda_texgi_smooth > 0
-        if need_texgi:
-            # Ensure generator fitted
-            self.fit_generator_if_needed()
+        need_phi = (self.lambda_smooth > 0) or (self.lambda_expert > 0)
+        if need_phi:
+            # Generator only required when expert penalty is active
+            if self.lambda_expert > 0:
+                self.fit_generator_if_needed()
             with torch.enable_grad():
                 # Subsample for IG to control cost
                 B = X.shape[0] if torch.is_tensor(X) else embeddings.shape[0]
@@ -861,7 +864,7 @@ class MySATrainer:
                     forward_fn,
                     Xsub,
                     self.G,
-                    self.ref_stats or {},
+                    self.ref_stats if (self.G is not None and self.ref_stats is not None) else {},
                     M=self.ig_steps,
                     latent_dim=self.latent_dim,
                     extreme_dim=self.extreme_dim,
@@ -869,15 +872,15 @@ class MySATrainer:
                     forward_kwargs={"modality_mask": mask_sub} if mask_sub is not None else None,
                 )
 
-                if self.lambda_expert > 0 and self.expert_rules and self.feat2idx:
-                    loss_Omega = expert_penalty(phi, self.expert_rules, self.feat2idx)
-                    loss_expert = self.lambda_expert * loss_Omega
-                    loss = loss + loss_expert
+                if self.lambda_smooth > 0:
+                    omega_smooth = attribution_temporal_l1(phi)
+                    loss_smooth = self.lambda_smooth * omega_smooth
 
-                if self.lambda_texgi_smooth > 0 and phi.size(0) > 1:
-                    diff = phi[1:] - phi[:-1]
-                    loss_texgi = self.lambda_texgi_smooth * diff.pow(2).mean()
-                    loss = loss + loss_texgi
+                if self.lambda_expert > 0:
+                    omega_expert = expert_penalty(phi, self.important_idx)
+                    loss_expert = self.lambda_expert * omega_expert
+
+        loss = loss_main + loss_smooth + loss_expert
 
         self.opt.zero_grad(set_to_none=True)
         loss.backward()
@@ -887,7 +890,6 @@ class MySATrainer:
             loss_main.item(),
             loss_smooth.item(),
             loss_expert.item(),
-            loss_texgi.item(),
         )
 
     @torch.no_grad()
@@ -1513,7 +1515,6 @@ def _run_mysa_core(prepared: Dict[str, Any], config: Dict) -> Dict:
         device=config.get("device", None),
         lambda_smooth=float(config.get("lambda_smooth", 0.0)),
         lambda_expert=float(config.get("lambda_expert", 0.0)),
-        lambda_texgi_smooth=float(config.get("lambda_texgi_smooth", 0.0)),
         expert_rules=expert_rules,
         feat2idx=feat2idx,
         ig_steps=int(config.get("ig_steps", 20)),
@@ -1533,20 +1534,18 @@ def _run_mysa_core(prepared: Dict[str, Any], config: Dict) -> Dict:
     best = {"val_cindex": 0.0, "epoch": -1}
     epochs = int(config.get("epochs", 200))
     for ep in range(1, epochs + 1):
-        lm = ls = le = lt = 0.0
+        lm = ls = le = 0.0
         steps = 0
         for batch in train_loader:
-            lmm, lss, lee, ltex = trainer.step(batch)
+            lmm, lss, lee = trainer.step(batch)
             lm += lmm
             ls += lss
             le += lee
-            lt += ltex
             steps += 1
         steps = max(steps, 1)
         lm /= steps
         ls /= steps
         le /= steps
-        lt /= steps
 
         val_c = trainer.evaluate_cindex(val_loader, dur_va, evt_va)
         trainer.sched.step(1.0 - val_c)
@@ -1556,7 +1555,7 @@ def _run_mysa_core(prepared: Dict[str, Any], config: Dict) -> Dict:
             torch.save(model.state_dict(), "model.pt")
 
         print(
-            f"[MySA] Ep{ep:03d}  NLL={lm:.4f}  Smooth={ls:.4f}  Expert={le:.4f}  TEXGI-Smooth={lt:.4f}  | Val C-index={val_c:.4f}"
+            f"[MySA] Ep{ep:03d}  NLL={lm:.4f}  Smooth={ls:.4f}  Expert={le:.4f}  | Val C-index={val_c:.4f}"
         )
 
     device = trainer.device
