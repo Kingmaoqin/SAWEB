@@ -1,8 +1,8 @@
 
 # run_models.py — MySA-integrated Workbench (drop-in replacement)
 # This page supports: CoxTime, DeepSurv, DeepHit, and MySA (TEXGI).
-# - Adds three loss-weight sliders (lambda_smooth, lambda_expert, lambda_texgi_smooth)
-# - Adds an editable Expert Rules table (relation/sign/min_mag/weight)
+# - Adds two loss-weight sliders (lambda_smooth, lambda_expert)
+# - Adds an editable Expert Rules table (relation/sign/min_mag/weight) and an "Important set" selector
 # - Shows TEXGI Feature Importance (Top-K + expand to all), and allows downloading time-dependent attributions.
 
 import streamlit as st
@@ -14,6 +14,76 @@ from typing import Any, Dict, List, Optional, Sequence, Set
 from models import coxtime, deepsurv, deephit
 from models.mysa import run_mysa as run_texgisa
 from utils.identifiers import canonicalize_series
+from html import escape
+
+_TOOLTIP_STYLE = """
+<style>
+.help-tooltip {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    border: 1px solid #7b8794;
+    color: #7b8794;
+    font-weight: 700;
+    font-size: 0.72rem;
+    margin-left: 0.35rem;
+    cursor: default;
+    background: #ffffff10;
+}
+
+.help-tooltip::after,
+.help-tooltip::before {
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.18s ease-in-out;
+}
+
+.help-tooltip:hover::after,
+.help-tooltip:focus::after,
+.help-tooltip:hover::before,
+.help-tooltip:focus::before {
+    opacity: 1;
+}
+
+.help-tooltip::after {
+    content: attr(data-tip);
+    position: absolute;
+    min-width: 200px;
+    max-width: 320px;
+    background: #1f2933;
+    color: #f5f7fa;
+    padding: 0.6rem 0.75rem;
+    border-radius: 0.5rem;
+    box-shadow: 0 10px 25px rgba(15, 23, 42, 0.22);
+    top: 125%;
+    right: 0;
+    white-space: pre-wrap;
+    line-height: 1.4;
+    z-index: 9999;
+}
+
+.help-tooltip::before {
+    content: "";
+    position: absolute;
+    top: 108%;
+    right: 8px;
+    border-left: 7px solid transparent;
+    border-right: 7px solid transparent;
+    border-bottom: 7px solid #1f2933;
+}
+</style>
+"""
+
+
+def _ensure_help_tooltip_css():
+    if not st.session_state.get("_help_tooltip_css_injected", False):
+        st.markdown(_TOOLTIP_STYLE, unsafe_allow_html=True)
+        st.session_state["_help_tooltip_css_injected"] = True
+
 def _md_explain(text: str, size: str = "1.12rem", line_height: float = 1.6):
     """把解释文字放大显示。size 可改为 1.2rem/1.3rem 等。"""
     st.markdown(
@@ -140,7 +210,7 @@ def _qhelp_md(key: str) -> str:
         "positive_label": "Maps samples in the event column equal to this value to 1 (event occurred), and all others to 0 (censored).",
 
         # Algorithm Selection & Common Training Parameters
-        "algo":           "Select the training algorithm. TEXGISA supports time-dependent explanations and expert priors; CoxTime/DeepSurv/DeepHit are common baselines.",
+        "algo":           "Select the training algorithm. TEXGISA is the only option that performs end-to-end multimodal training (tabular + raw images/sensors) with TEXGI explanations. CoxTime/DeepSurv/DeepHit consume tabular inputs or pre-fused feature tables only.",
         "batch_size":     "The number of samples used for each parameter update. Can be reduced if GPU memory is tight; more stable but slower.",
         "epochs":         "The number of training epochs. A larger value is generally more stable but takes longer. It's recommended to start with 50~150 to observe convergence.",
         "lr":             "Learning rate. Too large can cause oscillations, too small makes training very slow. You can start with a range of 1e-3 ~ 1e-2.",
@@ -152,7 +222,7 @@ def _qhelp_md(key: str) -> str:
         # MySA Regularization & Priors
         "lambda_expert":  "The weight for the expert prior penalty (λ_expert). A larger value enforces stronger adherence to expert rules/importance; too large may sacrifice predictive performance.",
         "lambda_smooth":  "The weight for smoothness in the time dimension (λ_smooth). Makes explanations smoother across adjacent time points; too large may mask true time-dependent effects.",
-        "lambda_texgi_smooth": "Additional smoothness applied directly to TEXGI attributions across neighboring time bins. Helps keep explanations stable when modalities introduce high-variance signals.",
+        "important_features": "Select the expert-defined important feature set I. Features in this set are encouraged to maintain at least the average TEXGI magnitude, while features outside I are damped by the expert penalty.",
         "fast_mode":      "Acceleration mode: Uses a lightweight generator and approximate TEXGI for a quick preview of the expert prior's effect. Results may differ slightly from the full version.",
         "ig_steps":       "The number of integration steps for calculating Integrated Gradients (TEXGI). Larger is more accurate but slower (commonly 16~64).",
 
@@ -180,20 +250,79 @@ def field_with_help(control_fn, label, help_key: str, *args, **kwargs):
     try:
         return control_fn(label, *args, help=help_msg, **kwargs)
     except TypeError:
-        # 2) 兜底：没有 help= 的控件，用右侧 ❔（popover→button）
+        # 2) 兜底：没有 help= 的控件，用右侧 ❔（hover tooltip）
         c1, c2 = st.columns([0.96, 0.04])  # 右侧给足空间，避免被吃掉
         with c1:
             val = control_fn(label, *args, **kwargs)
         with c2:
-            try:
-                # 新版 popover
-                with st.popover("❔"):
-                    st.markdown(help_msg)
-            except Exception:
-                # 老版：按钮点击在控件下方显示说明
-                if st.button("❔", key=f"help_{help_key}"):
-                    st.info(help_msg)
+            _render_help_tooltip(help_msg, f"help_{help_key}")
         return val
+
+
+def _render_help_tooltip(text: str, key: str):
+    """Render a hover-based ❔ tooltip with the supplied Markdown converted to plain text."""
+    _ensure_help_tooltip_css()
+    sanitized = escape(text, quote=True).replace("\n", "&#10;")
+    html = f"<span class='help-tooltip' id='{escape(key)}' tabindex='0' data-tip='{sanitized}'>?</span>"
+    st.markdown(html, unsafe_allow_html=True)
+
+
+def uploader_with_help(label: str, *, key: str, help_text: str, column_ratio: Sequence[float] | None = None, **kwargs):
+    """Wrap ``st.file_uploader`` with a trailing ❔ help button."""
+    if column_ratio is None:
+        column_ratio = (0.9, 0.1)
+    cols = st.columns(column_ratio)
+    with cols[0]:
+        widget = st.file_uploader(label, key=key, **kwargs)
+    with cols[1]:
+        _render_help_tooltip(help_text, f"{key}_help")
+    return widget
+
+
+CHANNEL_HELP_TEXT: Dict[str, str] = {
+    "tabular_csv": (
+        "Upload a tabular survival dataset (CSV) with one row per subject, including `duration`/`event` columns. "
+        "All algorithms can train on this table. Add a stable identifier column if you plan to align extra modalities."
+    ),
+    "img_zip_simple": (
+        "Compressed folder (.zip) containing one image per subject. The wizard will extract features and build a table. "
+        "Only TEXGISA can later train end-to-end on raw images; other algorithms consume the generated tabular features."
+    ),
+    "img_labels_csv": (
+        "CSV template for image labels. Provide columns `image`, `duration`, and `event` so survival metrics can be derived."
+    ),
+    "sensor_zip": (
+        "Compressed folder (.zip) with sensor files (CSV/Parquet) per subject. Ensure filenames map to individuals consistently. "
+        "End-to-end multimodal training requires TEXGISA; other algorithms will use any derived feature table instead."
+    ),
+    "sensor_labels_csv": (
+        "CSV with `file`, `duration`, and `event` columns describing outcomes for each sensor recording."
+    ),
+    "mm_tabular": (
+        "Processed tabular modality aligned by ID. Works for every algorithm and acts as the anchor when merging other modalities."
+    ),
+    "mm_image": (
+        "Image-level features or metadata keyed by the same identifier as the tabular table. TEXGISA is required for end-to-end multimodal learning."
+    ),
+    "mm_sensor": (
+        "Sensor feature table keyed by the shared identifier. Non-TEXGISA algorithms will treat these as pre-merged columns."
+    ),
+    "mm_raw_tabular": (
+        "Primary tabular CSV used to align raw assets. Must contain the shared identifier, duration, and event columns."
+    ),
+    "mm_raw_img_zip": (
+        "Zip archive with raw image files referenced by the image manifest. Required for TEXGISA end-to-end multimodal runs."
+    ),
+    "mm_raw_img_manifest": (
+        "CSV manifest that lists each image filename alongside the shared identifier so TEXGISA can stream the raw assets."
+    ),
+    "mm_raw_sensor_zip": (
+        "Zip archive with raw sensor files. TEXGISA consumes these during joint multimodal optimisation."
+    ),
+    "mm_raw_sensor_manifest": (
+        "CSV manifest describing sensor files (`file`, shared ID, optional metadata) for TEXGISA's multimodal loader."
+    ),
+}
 
 
 def _extract_fi_df(results: dict) -> pd.DataFrame | None:
@@ -452,11 +581,15 @@ def _ensure_binary_event(series, positive=1):
         return (s == positive).astype(int)
 
 
-def _build_expert_rules_from_editor(df_rules):
+def _build_expert_rules_from_editor(df_rules, important_features=None):
     """Convert data_editor dataframe to expert_rules dict expected by MySA."""
     rules = []
+    important_features = [str(f).strip() for f in (important_features or []) if str(f).strip()]
+    result: Dict[str, Any] = {"rules": []}
+    if important_features:
+        result["important_features"] = important_features
     if df_rules is None or df_rules.empty:
-        return {"rules": []}
+        return result
     for _, row in df_rules.iterrows():
         feat = str(row.get("feature","")).strip()
         if not feat:
@@ -475,7 +608,8 @@ def _build_expert_rules_from_editor(df_rules):
         if min_mag > 0.0:
             rule["min_mag"] = min_mag
         rules.append(rule)
-    return {"rules": rules}
+    result["rules"] = rules
+    return result
 
 
 def _canonicalize_id_column(df: Optional[pd.DataFrame], col: Optional[str]) -> Optional[pd.DataFrame]:
@@ -750,11 +884,17 @@ def show():
     with st.expander("🖼️ Build Training Data from Image Data (ResNet-50 → Features)", expanded=False):
         st.markdown(
             "Steps: Upload **Image ZIP** → Complete/Import **Survival Labels** → One-click generate data table and directly train TEXGISA.\n\n"
-            "**Label Definitions**: `duration` is the follow-up time, `event` indicates if the event occurred (0=No, 1=Yes)."
+            "**Label Definitions**: `duration` is the follow-up time, `event` indicates if the event occurred (0=No, 1=Yes).\n\n"
+            "**Multimodal note**: Only TEXGISA consumes the raw images for end-to-end multimodal optimisation; other algorithms will use the generated tabular feature table."
         )
 
         # 1) Upload ZIP (Required)
-        zip_up = st.file_uploader("① Upload Image ZIP (Required)", type=["zip"], key="img_zip_simple")
+        zip_up = uploader_with_help(
+            "① Upload Image ZIP (Required)",
+            key="img_zip_simple",
+            help_text=CHANNEL_HELP_TEXT["img_zip_simple"],
+            type=["zip"],
+        )
 
         # 2) Parse ZIP and generate manifest (no path concept)
         if "imgwiz_manifest" not in st.session_state:
@@ -788,7 +928,12 @@ def show():
                     help="The template includes all image filenames. Please fill in the values in the duration/event columns."
                 )
             with c2:
-                labels_up = st.file_uploader("Or upload your completed label CSV", type=["csv"], key="img_labels_csv")
+                labels_up = uploader_with_help(
+                    "Or upload your completed label CSV",
+                    key="img_labels_csv",
+                    help_text=CHANNEL_HELP_TEXT["img_labels_csv"],
+                    type=["csv"],
+                )
 
             # If a label CSV is uploaded, merge it automatically
             if labels_up is not None:
@@ -907,10 +1052,16 @@ def show():
         st.markdown(
             "Steps: Upload **Sensor ZIP** (one file per sample, CSV/Parquet) → Complete/Import `file,duration,event` → "
             "Extract **full-sequence features** at once → Generate training table and directly train TEXGISA.\n\n"
-            "**Note**: By default, statistical and frequency-domain features are extracted from the entire sequence without a sliding window. If files contain timestamps, you can select a resampling frequency."
+            "**Note**: By default, statistical and frequency-domain features are extracted from the entire sequence without a sliding window. If files contain timestamps, you can select a resampling frequency.\n\n"
+            "**Multimodal note**: End-to-end optimisation on raw sensor waveforms is exclusive to TEXGISA; other algorithms will consume only the generated tabular features."
         )
 
-        zip_up_sens = st.file_uploader("① Upload Sensor ZIP (Required)", type=["zip"], key="sensor_zip")
+        zip_up_sens = uploader_with_help(
+            "① Upload Sensor ZIP (Required)",
+            key="sensor_zip",
+            help_text=CHANNEL_HELP_TEXT["sensor_zip"],
+            type=["zip"],
+        )
         if "senswiz_manifest" not in st.session_state:
             st.session_state["senswiz_manifest"] = None
             st.session_state["senswiz_root"] = ""
@@ -941,7 +1092,12 @@ def show():
                     mime="text/csv",
                 )
             with cc2:
-                labels_up = st.file_uploader("Upload Your Completed Label CSV", type=["csv"], key="sensor_labels_csv")
+                labels_up = uploader_with_help(
+                    "Upload Your Completed Label CSV",
+                    key="sensor_labels_csv",
+                    help_text=CHANNEL_HELP_TEXT["sensor_labels_csv"],
+                    type=["csv"],
+                )
 
             # Merge label CSV
             if labels_up is not None:
@@ -1027,6 +1183,10 @@ def show():
 
     # ===================== Multimodal data upload =============================
     with st.expander("🗂 Multimodal Data Upload", expanded=False):
+        st.info(
+            "TEXGISA is the only algorithm that performs end-to-end multimodal training. "
+            "CoxTime, DeepSurv, and DeepHit will rely on the merged tabular table created in this section."
+        )
         mode = st.radio(
             "Choose upload mode",
             ("Processed feature CSVs", "Raw assets (ZIP + manifest)"),
@@ -1035,9 +1195,24 @@ def show():
         )
 
         if mode == "Processed feature CSVs":
-            tab_up = st.file_uploader("Tabular CSV", type=["csv"], key="mm_tabular")
-            img_up = st.file_uploader("Image CSV", type=["csv"], key="mm_image")
-            sens_up = st.file_uploader("Sensor CSV", type=["csv"], key="mm_sensor")
+            tab_up = uploader_with_help(
+                "Tabular CSV",
+                key="mm_tabular",
+                help_text=CHANNEL_HELP_TEXT["mm_tabular"],
+                type=["csv"],
+            )
+            img_up = uploader_with_help(
+                "Image CSV",
+                key="mm_image",
+                help_text=CHANNEL_HELP_TEXT["mm_image"],
+                type=["csv"],
+            )
+            sens_up = uploader_with_help(
+                "Sensor CSV",
+                key="mm_sensor",
+                help_text=CHANNEL_HELP_TEXT["mm_sensor"],
+                type=["csv"],
+            )
 
             if tab_up is not None:
                 tab_df = pd.read_csv(tab_up)
@@ -1124,27 +1299,45 @@ def show():
             st.markdown(
                 "Upload the raw assets (ZIP + manifest) exported by the simulator or your own pipeline."
             )
-            tab_up = st.file_uploader("Tabular CSV (required)", type=["csv"], key="mm_raw_tabular")
+            tab_up = uploader_with_help(
+                "Tabular CSV (required)",
+                key="mm_raw_tabular",
+                help_text=CHANNEL_HELP_TEXT["mm_raw_tabular"],
+                type=["csv"],
+            )
             id_col = st.text_input(
                 "Common ID column for alignment",
                 value=st.session_state.get("mm_raw_id_col", "id"),
                 key="mm_raw_id_col",
+                help="Identifier present in every modality and used to align subjects across tables and manifests.",
             )
             img_id_col = st.text_input(
                 "Image manifest ID column",
                 value=st.session_state.get("mm_raw_img_id_col", "id"),
                 key="mm_raw_img_id_col",
+                help="Column name inside the image manifest that matches the shared identifier.",
             )
             sens_id_col = st.text_input(
                 "Sensor manifest ID column",
                 value=st.session_state.get("mm_raw_sens_id_col", "id"),
                 key="mm_raw_sens_id_col",
+                help="Column name inside the sensor manifest that matches the shared identifier.",
             )
 
             c1, c2 = st.columns(2)
             with c1:
-                img_zip = st.file_uploader("Image ZIP", type=["zip"], key="mm_raw_img_zip")
-                img_manifest = st.file_uploader("Image manifest CSV", type=["csv"], key="mm_raw_img_manifest")
+                img_zip = uploader_with_help(
+                    "Image ZIP",
+                    key="mm_raw_img_zip",
+                    help_text=CHANNEL_HELP_TEXT["mm_raw_img_zip"],
+                    type=["zip"],
+                )
+                img_manifest = uploader_with_help(
+                    "Image manifest CSV",
+                    key="mm_raw_img_manifest",
+                    help_text=CHANNEL_HELP_TEXT["mm_raw_img_manifest"],
+                    type=["csv"],
+                )
                 img_bs = st.number_input(
                     "Image batch size",
                     min_value=8,
@@ -1154,11 +1347,17 @@ def show():
                     key="mm_raw_img_bs",
                 )
             with c2:
-                sens_zip = st.file_uploader("Sensor ZIP", type=["zip"], key="mm_raw_sensor_zip")
-                sens_manifest = st.file_uploader(
+                sens_zip = uploader_with_help(
+                    "Sensor ZIP",
+                    key="mm_raw_sensor_zip",
+                    help_text=CHANNEL_HELP_TEXT["mm_raw_sensor_zip"],
+                    type=["zip"],
+                )
+                sens_manifest = uploader_with_help(
                     "Sensor manifest CSV",
-                    type=["csv"],
                     key="mm_raw_sensor_manifest",
+                    help_text=CHANNEL_HELP_TEXT["mm_raw_sensor_manifest"],
+                    type=["csv"],
                 )
                 sens_resample = st.number_input(
                     "Sensor resample Hz (0 = no resample)",
@@ -1340,7 +1539,12 @@ def show():
             "- For **TEXGISA**, you can set **λ_smooth** and **λ_expert**, and edit **Expert Rules**."
         )
 
-    uploaded = st.file_uploader("Upload CSV", type=["csv"])
+    uploaded = uploader_with_help(
+        "Upload CSV",
+        key="clinical_upload",
+        help_text=CHANNEL_HELP_TEXT["tabular_csv"],
+        type=["csv"],
+    )
     if uploaded is not None:
         try:
             data = pd.read_csv(uploaded)
@@ -1574,7 +1778,7 @@ def show():
     # ===================== 4) TEXGISA regularizers & expert rules ================
     if algo == "TEXGISA":
         st.markdown("### Regularizers")
-        r1, r2, r3 = st.columns(3)
+        r1, r2 = st.columns(2)
         with r1:
             lambda_smooth = field_with_help(
                 st.number_input, "λ_smooth (temporal smoothness)", "lambda_smooth",
@@ -1585,19 +1789,29 @@ def show():
                 st.number_input, "λ_expert (expert prior penalty)", "lambda_expert",
                 0.0, 10.0, 0.10, step=0.05, format="%.2f"
             )
-        with r3:
-            lambda_texgi_smooth = field_with_help(
-                st.number_input,
-                "λ_texgi_smooth (TEXGI temporal smoothness)",
-                "lambda_texgi_smooth",
-                0.0,
-                1.0,
-                0.05,
-                step=0.01,
-                format="%.2f",
-            )
 
-        st.markdown("### Expert Rules")
+        st.markdown("### Expert Guidance")
+
+        # Important set I selector
+        prev_imp = st.session_state.get("important_features", [])
+        default_imp = [f for f in prev_imp if f in features]
+        cols_imp = st.columns([0.94, 0.06])
+        with cols_imp[0]:
+            important_features = st.multiselect(
+                "Important features (set I)",
+                options=features,
+                default=default_imp,
+                key="important_features_selector",
+            )
+        with cols_imp[1]:
+            _render_help_tooltip(_qhelp_md("important_features"), "help_important_features")
+        st.session_state["important_features"] = important_features
+
+        st.caption(
+            "Features in set I are protected by the expert penalty; other features are softly suppressed unless justified by TEXGI."
+        )
+
+        st.markdown("#### Directional / magnitude constraints (optional)")
         # Prepare blank editor with choices
         options_relation = ["none", ">=mean", "<=mean"]
         options_sign = [-1, 0, +1]
@@ -1622,7 +1836,7 @@ def show():
             num_rows="dynamic",
             use_container_width=True
         )
-        expert_rules = _build_expert_rules_from_editor(edited)
+        expert_rules = _build_expert_rules_from_editor(edited, important_features)
 
         # Advanced TEXGI/Generator controls
         with st.expander("Advanced TEXGI / Generator settings", expanded=False):
@@ -1668,7 +1882,6 @@ def show():
         config.update({
             "lambda_smooth": float(lambda_smooth),
             "lambda_expert": float(lambda_expert),
-            "lambda_texgi_smooth": float(lambda_texgi_smooth),
             "expert_rules": expert_rules,
             "ig_steps": int(ig_steps),
             "latent_dim": int(latent_dim),
@@ -1688,6 +1901,19 @@ def show():
         "lr": float(lr),
         "feature_cols": features,
     })
+
+    mm_sources = _build_multimodal_sources(config)
+    if mm_sources:
+        if algo == "TEXGISA":
+            config["multimodal_sources"] = mm_sources
+            st.success(
+                "✅ Raw multimodal inputs detected. TEXGISA will optimise all modalities end-to-end with TEXGI."
+            )
+        else:
+            st.warning(
+                f"Raw multimodal inputs are loaded, but {algo} will ignore the raw assets and train on the merged table only. "
+                "Switch to TEXGISA for end-to-end multimodal optimisation."
+            )
 
     # ===================== 5) Run =============================================
     c_run1, c_run2 = st.columns(2)
@@ -1856,9 +2082,10 @@ def run_analysis(algo: str, df: pd.DataFrame, config: dict):
         if run_texgisa is None:
             raise RuntimeError("TEXGISA not available. Please ensure models/mysa.py is present.")
         cfg = dict(config)
-        mm_sources = _build_multimodal_sources(cfg)
-        if mm_sources is not None:
-            cfg["multimodal_sources"] = mm_sources
+        if "multimodal_sources" not in cfg:
+            mm_sources = _build_multimodal_sources(cfg)
+            if mm_sources is not None:
+                cfg["multimodal_sources"] = mm_sources
         return run_texgisa(df, cfg)
     else:
         raise ValueError(f"Unknown algorithm: {algo}")
