@@ -19,7 +19,14 @@ from torch.utils.data import Dataset, DataLoader
 # Attempt to import torchvision (provide a clear error if unavailable)
 try:
     import torchvision
-    from torchvision.models import resnet50, ResNet50_Weights
+    from torchvision.models import (
+        resnet18,
+        resnet34,
+        resnet50,
+        ResNet18_Weights,
+        ResNet34_Weights,
+        ResNet50_Weights,
+    )
     from torchvision.transforms import v2 as T
 except Exception as e:
     raise RuntimeError(
@@ -45,19 +52,22 @@ def _load_backbone_and_transform(
     dev = _resolve_device(device)
     name = (model_name or "resnet50").lower().strip()
 
-    if name != "resnet50":
-        raise ValueError("Only model_name='resnet50' is supported in this version.")
+    if name in {"resnet18", "resnet34", "resnet50"}:
+        backbone_map = {
+            "resnet18": (resnet18, ResNet18_Weights),
+            "resnet34": (resnet34, ResNet34_Weights),
+            "resnet50": (resnet50, ResNet50_Weights),
+        }
+        backbone_fn, weights_cls = backbone_map[name]
+        weights = weights_cls.DEFAULT
+        model = backbone_fn(weights=weights)
+        feat_dim = model.fc.in_features
+        model.fc = torch.nn.Identity()  # expose penultimate features
+        model.eval().to(dev)
+        tfm = weights.transforms()
+        return model, tfm, feat_dim, dev
 
-    weights = ResNet50_Weights.DEFAULT
-    model = resnet50(weights=weights)
-    model.fc = torch.nn.Identity()  # remove the classification head to expose 2048-dim embeddings
-    model.eval().to(dev)
-
-    # Use the transforms that ship with the selected weights
-    tfm = weights.transforms()
-
-    feat_dim = 2048
-    return model, tfm, feat_dim, dev
+    raise ValueError("Only ResNet backbones (resnet18/resnet34/resnet50) are supported in this version.")
 
 
 class _ImageTableDataset(Dataset):
