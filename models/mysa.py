@@ -550,7 +550,7 @@ def integrated_gradients_time(
     alphas = torch.linspace(0.0, 1.0, steps=M + 1, device=device)[1:]  # exclude 0
     Xdiff = (X - X_baseline)
 
-    atts = torch.zeros_like(X)
+    atts_terms: List[torch.Tensor] = []
     kwargs = forward_kwargs or {}
 
     for a in alphas:
@@ -562,10 +562,11 @@ def integrated_gradients_time(
             out.sum(),
             Xpath,
             retain_graph=False,
-            create_graph=torch.is_grad_enabled(),
+            create_graph=True,
         )[0]
-        atts = atts + grads
-    atts = atts * Xdiff / float(len(alphas))
+        atts_terms.append(grads)
+
+    atts = torch.stack(atts_terms, dim=0).mean(dim=0) * Xdiff
     return atts
 
 
