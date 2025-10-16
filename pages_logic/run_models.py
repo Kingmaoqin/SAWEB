@@ -240,23 +240,17 @@ def _qhelp_md(key: str) -> str:
 
 def field_with_help(control_fn, label, help_key: str, *args, **kwargs):
     """
-    优先用 Streamlit 原生 help=（控件标签右侧会出现 (i) 图标）；
-    老版本没有 help= 时，右侧放一个 ❔，点击弹出说明/或在下方显示。
+    始终在控件右侧显示统一风格的 ❔ 提示，保持界面一致性。
     用法不变：epochs = field_with_help(st.number_input, "Epochs", "epochs", 10, 2000, 150, step=10)
     """
     help_msg = _qhelp_md(help_key)
 
-    # 1) 最稳：多数 st.* 控件都支持 help= 参数（官方 (i) icon）
-    try:
-        return control_fn(label, *args, help=help_msg, **kwargs)
-    except TypeError:
-        # 2) 兜底：没有 help= 的控件，用右侧 ❔（hover tooltip）
-        c1, c2 = st.columns([0.96, 0.04])  # 右侧给足空间，避免被吃掉
-        with c1:
-            val = control_fn(label, *args, **kwargs)
-        with c2:
-            _render_help_tooltip(help_msg, f"help_{help_key}")
-        return val
+    c1, c2 = st.columns([0.94, 0.06])
+    with c1:
+        value = control_fn(label, *args, **kwargs)
+    with c2:
+        _render_help_tooltip(help_msg, f"help_{help_key}")
+    return value
 
 
 def _render_help_tooltip(text: str, key: str):
@@ -583,31 +577,60 @@ def _ensure_binary_event(series, positive=1):
 
 def _build_expert_rules_from_editor(df_rules, important_features=None):
     """Convert data_editor dataframe to expert_rules dict expected by MySA."""
-    rules = []
+
+    rules: List[Dict[str, Any]] = []
     important_features = [str(f).strip() for f in (important_features or []) if str(f).strip()]
     result: Dict[str, Any] = {"rules": []}
     if important_features:
         result["important_features"] = important_features
     if df_rules is None or df_rules.empty:
         return result
+
     for _, row in df_rules.iterrows():
-        feat = str(row.get("feature","")).strip()
+        feat = str(row.get("feature", "")).strip()
         if not feat:
             continue
-        relation = row.get("relation", None)
-        if relation in ("none", "", None):
-            relation = None
-        sign = int(row.get("sign", 0)) if pd.notna(row.get("sign", 0)) else 0
-        min_mag = float(row.get("min_mag", 0.0)) if pd.notna(row.get("min_mag", 0.0)) else 0.0
-        weight = float(row.get("weight", 1.0)) if pd.notna(row.get("weight", 1.0)) else 1.0
-        rule = {"feature": feat, "weight": weight}
-        if relation is not None:
+
+        rule: Dict[str, Any] = {"feature": feat}
+
+        # 兼容旧字段名称（min_mag）并支持新的 importance_floor
+        importance_floor = None
+        if "importance_floor" in row:
+            importance_floor = row.get("importance_floor")
+        elif "min_mag" in row:
+            importance_floor = row.get("min_mag")
+        if pd.notna(importance_floor):
+            floor_val = float(importance_floor)
+            if floor_val > 0:
+                rule["importance_floor"] = floor_val
+
+        weight_val = row.get("weight", None)
+        if pd.notna(weight_val):
+            try:
+                weight = float(weight_val)
+            except (TypeError, ValueError):
+                weight = None
+            if weight is not None and weight > 0:
+                rule["weight"] = weight
+
+        # 以下字段用于兼容历史配置，当前 UI 不再暴露
+        relation = row.get("relation") if "relation" in row else None
+        if isinstance(relation, str):
+            relation = relation.strip() or None
+        if relation and relation.lower() not in {"none", ""}:
             rule["relation"] = relation
-        if sign != 0:
-            rule["sign"] = sign
-        if min_mag > 0.0:
-            rule["min_mag"] = min_mag
-        rules.append(rule)
+
+        if "sign" in row:
+            try:
+                sign = int(row.get("sign", 0))
+            except (TypeError, ValueError):
+                sign = 0
+            if sign != 0:
+                rule["sign"] = sign
+
+        if len(rule) > 1:
+            rules.append(rule)
+
     result["rules"] = rules
     return result
 
@@ -1812,29 +1835,32 @@ def show():
         )
 
         st.markdown("#### Directional / magnitude constraints (optional)")
-        # Prepare blank editor with choices
-        options_relation = ["none", ">=mean", "<=mean"]
-        options_sign = [-1, 0, +1]
+        st.caption(
+            "The current MySA release only supports encouraging minimum TEXGI magnitude per feature. "
+            "Directional/sign constraints are not yet available."
+        )
 
-        # Seed table with Top-10 placeholders (feature dropdowns)
+        # Seed table with a few editable rows prioritising expert-marked features
+        base_rows = list(dict.fromkeys(important_features))
+        if not base_rows:
+            base_rows = [features[0]] if features else []
+        while len(base_rows) < 5:
+            base_rows.append("")
+
         seed = pd.DataFrame({
-            "feature": (features + [""]*10)[:10],
-            "relation": ["none"]*10,
-            "sign": [0]*10,
-            "min_mag": [0.0]*10,
-            "weight": [1.0]*10,
+            "feature": base_rows,
+            "importance_floor": [0.0] * len(base_rows),
+            "weight": [1.0] * len(base_rows),
         })
         edited = st.data_editor(
             seed,
             column_config={
                 "feature": st.column_config.SelectboxColumn("feature", options=features, help="Choose a feature"),
-                "relation": st.column_config.SelectboxColumn("relation", options=options_relation),
-                "sign": st.column_config.SelectboxColumn("sign", options=options_sign),
-                "min_mag": st.column_config.NumberColumn("min_mag", step=0.01, format="%.3f"),
-                "weight": st.column_config.NumberColumn("weight", step=0.1, format="%.2f"),
+                "importance_floor": st.column_config.NumberColumn("minimum TEXGI magnitude", step=0.01, format="%.3f"),
+                "weight": st.column_config.NumberColumn("penalty weight", step=0.1, format="%.2f"),
             },
             num_rows="dynamic",
-            use_container_width=True
+            use_container_width=True,
         )
         expert_rules = _build_expert_rules_from_editor(edited, important_features)
 
