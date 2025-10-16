@@ -1,8 +1,8 @@
 
 # run_models.py — MySA-integrated Workbench (drop-in replacement)
 # This page supports: CoxTime, DeepSurv, DeepHit, and MySA (TEXGI).
-# - Adds three loss-weight sliders (lambda_smooth, lambda_expert, lambda_texgi_smooth)
-# - Adds an editable Expert Rules table (relation/sign/min_mag/weight)
+# - Adds two loss-weight sliders (lambda_smooth, lambda_expert)
+# - Adds an editable Expert Rules table (relation/sign/min_mag/weight) and an "Important set" selector
 # - Shows TEXGI Feature Importance (Top-K + expand to all), and allows downloading time-dependent attributions.
 
 import streamlit as st
@@ -222,7 +222,7 @@ def _qhelp_md(key: str) -> str:
         # MySA Regularization & Priors
         "lambda_expert":  "The weight for the expert prior penalty (λ_expert). A larger value enforces stronger adherence to expert rules/importance; too large may sacrifice predictive performance.",
         "lambda_smooth":  "The weight for smoothness in the time dimension (λ_smooth). Makes explanations smoother across adjacent time points; too large may mask true time-dependent effects.",
-        "lambda_texgi_smooth": "Additional smoothness applied directly to TEXGI attributions across neighboring time bins. Helps keep explanations stable when modalities introduce high-variance signals.",
+        "important_features": "Select the expert-defined important feature set I. Features in this set are encouraged to maintain at least the average TEXGI magnitude, while features outside I are damped by the expert penalty.",
         "fast_mode":      "Acceleration mode: Uses a lightweight generator and approximate TEXGI for a quick preview of the expert prior's effect. Results may differ slightly from the full version.",
         "ig_steps":       "The number of integration steps for calculating Integrated Gradients (TEXGI). Larger is more accurate but slower (commonly 16~64).",
 
@@ -581,11 +581,15 @@ def _ensure_binary_event(series, positive=1):
         return (s == positive).astype(int)
 
 
-def _build_expert_rules_from_editor(df_rules):
+def _build_expert_rules_from_editor(df_rules, important_features=None):
     """Convert data_editor dataframe to expert_rules dict expected by MySA."""
     rules = []
+    important_features = [str(f).strip() for f in (important_features or []) if str(f).strip()]
+    result: Dict[str, Any] = {"rules": []}
+    if important_features:
+        result["important_features"] = important_features
     if df_rules is None or df_rules.empty:
-        return {"rules": []}
+        return result
     for _, row in df_rules.iterrows():
         feat = str(row.get("feature","")).strip()
         if not feat:
@@ -604,7 +608,8 @@ def _build_expert_rules_from_editor(df_rules):
         if min_mag > 0.0:
             rule["min_mag"] = min_mag
         rules.append(rule)
-    return {"rules": rules}
+    result["rules"] = rules
+    return result
 
 
 def _canonicalize_id_column(df: Optional[pd.DataFrame], col: Optional[str]) -> Optional[pd.DataFrame]:
@@ -1773,7 +1778,7 @@ def show():
     # ===================== 4) TEXGISA regularizers & expert rules ================
     if algo == "TEXGISA":
         st.markdown("### Regularizers")
-        r1, r2, r3 = st.columns(3)
+        r1, r2 = st.columns(2)
         with r1:
             lambda_smooth = field_with_help(
                 st.number_input, "λ_smooth (temporal smoothness)", "lambda_smooth",
@@ -1784,19 +1789,29 @@ def show():
                 st.number_input, "λ_expert (expert prior penalty)", "lambda_expert",
                 0.0, 10.0, 0.10, step=0.05, format="%.2f"
             )
-        with r3:
-            lambda_texgi_smooth = field_with_help(
-                st.number_input,
-                "λ_texgi_smooth (TEXGI temporal smoothness)",
-                "lambda_texgi_smooth",
-                0.0,
-                1.0,
-                0.05,
-                step=0.01,
-                format="%.2f",
-            )
 
-        st.markdown("### Expert Rules")
+        st.markdown("### Expert Guidance")
+
+        # Important set I selector
+        prev_imp = st.session_state.get("important_features", [])
+        default_imp = [f for f in prev_imp if f in features]
+        cols_imp = st.columns([0.94, 0.06])
+        with cols_imp[0]:
+            important_features = st.multiselect(
+                "Important features (set I)",
+                options=features,
+                default=default_imp,
+                key="important_features_selector",
+            )
+        with cols_imp[1]:
+            _render_help_tooltip(_qhelp_md("important_features"), "help_important_features")
+        st.session_state["important_features"] = important_features
+
+        st.caption(
+            "Features in set I are protected by the expert penalty; other features are softly suppressed unless justified by TEXGI."
+        )
+
+        st.markdown("#### Directional / magnitude constraints (optional)")
         # Prepare blank editor with choices
         options_relation = ["none", ">=mean", "<=mean"]
         options_sign = [-1, 0, +1]
@@ -1821,7 +1836,7 @@ def show():
             num_rows="dynamic",
             use_container_width=True
         )
-        expert_rules = _build_expert_rules_from_editor(edited)
+        expert_rules = _build_expert_rules_from_editor(edited, important_features)
 
         # Advanced TEXGI/Generator controls
         with st.expander("Advanced TEXGI / Generator settings", expanded=False):
@@ -1867,7 +1882,6 @@ def show():
         config.update({
             "lambda_smooth": float(lambda_smooth),
             "lambda_expert": float(lambda_expert),
-            "lambda_texgi_smooth": float(lambda_texgi_smooth),
             "expert_rules": expert_rules,
             "ig_steps": int(ig_steps),
             "latent_dim": int(latent_dim),
