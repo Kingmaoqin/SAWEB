@@ -562,7 +562,7 @@ def integrated_gradients_time(
             out.sum(),
             Xpath,
             retain_graph=False,
-            create_graph=True,
+            create_graph=False,
         )[0]
         atts_terms.append(grads)
 

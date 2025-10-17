@@ -31,8 +31,17 @@ _TOOLTIP_STYLE = """
     font-weight: 700;
     font-size: 0.72rem;
     margin-left: 0.35rem;
-    cursor: default;
+    cursor: help;
     background: #ffffff10;
+}
+
+.help-tooltip:focus {
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.45);
+}
+
+.help-tooltip:focus-visible {
+    outline: none;
 }
 
 .help-tooltip::after,
@@ -74,6 +83,14 @@ _TOOLTIP_STYLE = """
     border-left: 7px solid transparent;
     border-right: 7px solid transparent;
     border-bottom: 7px solid #1f2933;
+}
+
+[data-testid="column"] > div {
+    overflow: visible !important;
+}
+
+.stColumn {
+    overflow: visible !important;
 }
 </style>
 """
