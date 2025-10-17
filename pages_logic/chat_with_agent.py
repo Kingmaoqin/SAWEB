@@ -479,7 +479,7 @@ def show():
             st.stop()
 
         # chat input — the agent will call tools if prompted properly
-        user_text = st.chat_input("Type a message. E.g., run TEXGISA with λ_expert=0.1")
+        user_text = st.chat_input("Type a message. E.g., run TEXGISA time=duration event=event")
         if user_text:
             text = user_text.strip()
             low = text.lower()
@@ -504,27 +504,31 @@ def show():
                 st.stop()
 
             # -------- 轻量命令：直接跑你的代码（不经 LLM） --------
-            if low.startswith("preview") or "preview_fi" in low or "feature importance" in low:
+            if (
+                low.startswith("preview")
+                or "preview_fi" in low
+                or "feature importance" in low
+                or ("texgi" in low and "preview" in low)
+            ):
                 t = _get_arg(r"time(?:_col)?\s*=\s*([\w\.\-]+)", t_guess)
                 e = _get_arg(r"event(?:_col)?\s*=\s*([\w\.\-]+)", e_guess)
                 ep = _get_arg(r"epochs\s*=\s*(\d+)", 80, int)
                 _run_direct("TEXGISA", t, e, epochs=ep, preview=True)
                 st.stop()
 
-            if low.startswith("train") and ("TEXGISA" in low or "texgisa" in low):
+            if (
+                ("texgisa" in low or "texgi" in low)
+                and (
+                    low.startswith("run")
+                    or low.startswith("train")
+                    or " run " in low
+                    or " train " in low
+                )
+            ):
                 t = _get_arg(r"time(?:_col)?\s*=\s*([\w\.\-]+)", t_guess)
                 e = _get_arg(r"event(?:_col)?\s*=\s*([\w\.\-]+)", e_guess)
-                lam = _get_arg(r"(?:lambda|lambda_expert)\s*=\s*([0-9\.]+)", 0.1, float)
                 ep = _get_arg(r"epochs\s*=\s*(\d+)", 150, int)
-                _run_direct("TEXGISA", t, e, epochs=ep, lambda_expert=lam, preview=False)
-                st.stop()
-
-            if low.startswith("run") and ("coxtime" in low or "deepsurv" in low or "deephit" in low):
-                alg = "CoxTime" if "coxtime" in low else ("DeepSurv" if "deepsurv" in low else "DeepHit")
-                t = _get_arg(r"time(?:_col)?\s*=\s*([\w\.\-]+)", t_guess)
-                e = _get_arg(r"event(?:_col)?\s*=\s*([\w\.\-]+)", e_guess)
-                ep = _get_arg(r"epochs\s*=\s*(\d+)", 120, int)
-                _run_direct(alg, t, e, epochs=ep)
+                _run_direct("TEXGISA", t, e, epochs=ep, preview=False)
                 st.stop()
 
             # 其他自由文本 -> 走 LLM（但会被 B 步的上下文“约束”）
