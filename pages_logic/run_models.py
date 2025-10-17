@@ -31,8 +31,17 @@ _TOOLTIP_STYLE = """
     font-weight: 700;
     font-size: 0.72rem;
     margin-left: 0.35rem;
-    cursor: default;
+    cursor: help;
     background: #ffffff10;
+}
+
+.help-tooltip:focus {
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.45);
+}
+
+.help-tooltip:focus-visible {
+    outline: none;
 }
 
 .help-tooltip::after,
@@ -74,6 +83,14 @@ _TOOLTIP_STYLE = """
     border-left: 7px solid transparent;
     border-right: 7px solid transparent;
     border-bottom: 7px solid #1f2933;
+}
+
+[data-testid="column"] > div {
+    overflow: visible !important;
+}
+
+.stColumn {
+    overflow: visible !important;
 }
 </style>
 """
@@ -210,21 +227,22 @@ def _qhelp_md(key: str) -> str:
         "positive_label": "Maps samples in the event column equal to this value to 1 (event occurred), and all others to 0 (censored).",
 
         # Algorithm Selection & Common Training Parameters
-        "algo":           "Select the training algorithm. TEXGISA is the only option that performs end-to-end multimodal training (tabular + raw images/sensors) with TEXGI explanations. CoxTime/DeepSurv/DeepHit consume tabular inputs or pre-fused feature tables only.",
-        "batch_size":     "The number of samples used for each parameter update. Can be reduced if GPU memory is tight; more stable but slower.",
-        "epochs":         "The number of training epochs. A larger value is generally more stable but takes longer. It's recommended to start with 50~150 to observe convergence.",
-        "lr":             "Learning rate. Too large can cause oscillations, too small makes training very slow. You can start with a range of 1e-3 ~ 1e-2.",
+        "algo":           "选择训练算法。TEXGISA 支持端到端的多模态训练（表格 + 原始图像/传感器）并输出 TEXGI 解释；CoxTime、DeepSurv、DeepHit 仅使用表格或已融合的特征表。\nSelect the training algorithm. TEXGISA is the only option that performs end-to-end multimodal training (tabular + raw images/sensors) with TEXGI explanations.",
+        "batch_size":     "每次参数更新所使用的样本数量；更大的 batch 更稳定但占用显存更高。\nNumber of samples per optimisation step; reduce if GPU memory is tight.",
+        "epochs":         "训练轮数；越大越稳定但耗时更久，建议先从 50~150 观察收敛情况。\nTotal training epochs. Larger values improve stability at the cost of runtime.",
+        "lr":             "学习率；过大易发散，过小收敛缓慢。可从 1e-3 到 1e-2 区间尝试。\nLearning rate. Too large causes oscillation, too small slows convergence.",
         "val_split":      "The proportion of training data to be used for validation, for early stopping and best epoch selection.",
 
         # DeepHit
         "num_intervals":  "The number of intervals to discretize continuous time into (used only by DeepHit/discrete-time models). Too many can lead to sparsity, too few can be too coarse.",
 
         # MySA Regularization & Priors
-        "lambda_expert":  "The weight for the expert prior penalty (λ_expert). A larger value enforces stronger adherence to expert rules/importance; too large may sacrifice predictive performance.",
-        "lambda_smooth":  "The weight for smoothness in the time dimension (λ_smooth). Makes explanations smoother across adjacent time points; too large may mask true time-dependent effects.",
-        "important_features": "Select the expert-defined important feature set I. Features in this set are encouraged to maintain at least the average TEXGI magnitude, while features outside I are damped by the expert penalty.",
-        "fast_mode":      "Acceleration mode: Uses a lightweight generator and approximate TEXGI for a quick preview of the expert prior's effect. Results may differ slightly from the full version.",
-        "ig_steps":       "The number of integration steps for calculating Integrated Gradients (TEXGI). Larger is more accurate but slower (commonly 16~64).",
+        "lambda_expert":  "专家先验惩罚的权重 λ_expert；数值越大越严格遵循重要特征集合，但可能牺牲预测精度。\nWeight for the expert prior penalty (λ_expert).",
+        "lambda_smooth":  "时间维度平滑项 λ_smooth；让 TEXGI 在相邻时间点更平滑，过大可能掩盖真实的时间效应。\nTemporal smoothness weight (λ_smooth).",
+        "important_features": "专家定义的重要特征集合 I。集合内特征会被鼓励保持较高的 TEXGI 重要度，集合外则会被惩罚。\nSelect the expert-defined important feature set I.",
+        "fast_mode":      "加速模式：使用轻量生成器和近似 TEXGI，适合快速预览先验效果，结果与完整版可能略有不同。\nAcceleration mode with approximate TEXGI for quick preview.",
+        "ig_steps":       "计算 TEXGI 的积分步数 M；越大越精确但计算越慢，常用范围 16~64。\nNumber of integration steps for TEXGI (larger = more accurate).",
+        "texgi_constraints": "为特征设置 TEXGI 重要度的最小阈值（当前版本不支持方向/符号约束）。只有在 λ_expert>0 时这些约束才会生效。\nConfigure minimum TEXGI magnitude floors per feature. Directional/sign constraints are not yet supported.",
 
         # Generator / TEXGI Advanced Parameters
         "latent_dim":       "The dimension of the generator's noise vector (latent variable).",
@@ -240,23 +258,17 @@ def _qhelp_md(key: str) -> str:
 
 def field_with_help(control_fn, label, help_key: str, *args, **kwargs):
     """
-    优先用 Streamlit 原生 help=（控件标签右侧会出现 (i) 图标）；
-    老版本没有 help= 时，右侧放一个 ❔，点击弹出说明/或在下方显示。
+    始终在控件右侧显示统一风格的 ❔ 提示，保持界面一致性。
     用法不变：epochs = field_with_help(st.number_input, "Epochs", "epochs", 10, 2000, 150, step=10)
     """
     help_msg = _qhelp_md(help_key)
 
-    # 1) 最稳：多数 st.* 控件都支持 help= 参数（官方 (i) icon）
-    try:
-        return control_fn(label, *args, help=help_msg, **kwargs)
-    except TypeError:
-        # 2) 兜底：没有 help= 的控件，用右侧 ❔（hover tooltip）
-        c1, c2 = st.columns([0.96, 0.04])  # 右侧给足空间，避免被吃掉
-        with c1:
-            val = control_fn(label, *args, **kwargs)
-        with c2:
-            _render_help_tooltip(help_msg, f"help_{help_key}")
-        return val
+    c1, c2 = st.columns([0.94, 0.06])
+    with c1:
+        value = control_fn(label, *args, **kwargs)
+    with c2:
+        _render_help_tooltip(help_msg, f"help_{help_key}")
+    return value
 
 
 def _render_help_tooltip(text: str, key: str):
@@ -277,6 +289,14 @@ def uploader_with_help(label: str, *, key: str, help_text: str, column_ratio: Se
     with cols[1]:
         _render_help_tooltip(help_text, f"{key}_help")
     return widget
+
+
+def _preview_dataframe(df: Optional[pd.DataFrame], *, max_rows: int = 10) -> None:
+    """Display up to ``max_rows`` rows with consistent styling (handles wide tables gracefully)."""
+    if df is None:
+        return
+    rows = min(len(df), max_rows)
+    st.dataframe(df.head(rows), use_container_width=True)
 
 
 CHANNEL_HELP_TEXT: Dict[str, str] = {
@@ -583,31 +603,60 @@ def _ensure_binary_event(series, positive=1):
 
 def _build_expert_rules_from_editor(df_rules, important_features=None):
     """Convert data_editor dataframe to expert_rules dict expected by MySA."""
-    rules = []
+
+    rules: List[Dict[str, Any]] = []
     important_features = [str(f).strip() for f in (important_features or []) if str(f).strip()]
     result: Dict[str, Any] = {"rules": []}
     if important_features:
         result["important_features"] = important_features
     if df_rules is None or df_rules.empty:
         return result
+
     for _, row in df_rules.iterrows():
-        feat = str(row.get("feature","")).strip()
+        feat = str(row.get("feature", "")).strip()
         if not feat:
             continue
-        relation = row.get("relation", None)
-        if relation in ("none", "", None):
-            relation = None
-        sign = int(row.get("sign", 0)) if pd.notna(row.get("sign", 0)) else 0
-        min_mag = float(row.get("min_mag", 0.0)) if pd.notna(row.get("min_mag", 0.0)) else 0.0
-        weight = float(row.get("weight", 1.0)) if pd.notna(row.get("weight", 1.0)) else 1.0
-        rule = {"feature": feat, "weight": weight}
-        if relation is not None:
+
+        rule: Dict[str, Any] = {"feature": feat}
+
+        # 兼容旧字段名称（min_mag）并支持新的 importance_floor
+        importance_floor = None
+        if "importance_floor" in row:
+            importance_floor = row.get("importance_floor")
+        elif "min_mag" in row:
+            importance_floor = row.get("min_mag")
+        if pd.notna(importance_floor):
+            floor_val = float(importance_floor)
+            if floor_val > 0:
+                rule["importance_floor"] = floor_val
+
+        weight_val = row.get("weight", None)
+        if pd.notna(weight_val):
+            try:
+                weight = float(weight_val)
+            except (TypeError, ValueError):
+                weight = None
+            if weight is not None and weight > 0:
+                rule["weight"] = weight
+
+        # 以下字段用于兼容历史配置，当前 UI 不再暴露
+        relation = row.get("relation") if "relation" in row else None
+        if isinstance(relation, str):
+            relation = relation.strip() or None
+        if relation and relation.lower() not in {"none", ""}:
             rule["relation"] = relation
-        if sign != 0:
-            rule["sign"] = sign
-        if min_mag > 0.0:
-            rule["min_mag"] = min_mag
-        rules.append(rule)
+
+        if "sign" in row:
+            try:
+                sign = int(row.get("sign", 0))
+            except (TypeError, ValueError):
+                sign = 0
+            if sign != 0:
+                rule["sign"] = sign
+
+        if len(rule) > 1:
+            rules.append(rule)
+
     result["rules"] = rules
     return result
 
@@ -985,7 +1034,12 @@ def show():
             st.subheader("③ Generate Training Table (and optionally run a quick test with TEXGISA)")
             c3, c4, c5 = st.columns(3)
             with c3:
-                backbone = st.selectbox("Feature Backbone Network", ["resnet50"], index=0, help="Can be extended to ViT/CLIP after confirming it runs")
+                    backbone = st.selectbox(
+                        "Feature Backbone Network",
+                        ["resnet50", "resnet34", "resnet18"],
+                        index=0,
+                        help="ResNet feature extractor used for embeddings. (ViT/CLIP can be added after validation.)",
+                    )
             with c4:
                 img_bs = st.number_input("Feature Extraction Batch Size", 8, 256, 64, step=8)
             with c5:
@@ -1007,7 +1061,7 @@ def show():
                         dm.load_data(df_img, f"images+{backbone}")
                         dm.load_multimodal_data(image_df=df_img)
                     st.success(f"✅ Generated: {df_img.shape[0]} rows × {df_img.shape[1]} columns")
-                    st.dataframe(df_img.head(), use_container_width=True)
+                    _preview_dataframe(df_img)
                 except Exception as e:
                     st.error(f"Failed: {e}")
 
@@ -1175,7 +1229,7 @@ def show():
                         dm.load_data(df_sens, f"sensors_fullseq")
                         dm.load_multimodal_data(sensor_df=df_sens)
                     st.success(f"✅ Generated: {df_sens.shape[0]} rows × {df_sens.shape[1]} columns")
-                    st.dataframe(df_sens.head(), use_container_width=True)
+                    _preview_dataframe(df_sens)
                 except Exception as e:
                     st.error(f"Failed: {e}")
     # === End of sensor wizard ======================================================
@@ -1217,15 +1271,15 @@ def show():
             if tab_up is not None:
                 tab_df = pd.read_csv(tab_up)
                 st.session_state["mm_tabular_df"] = tab_df
-                st.dataframe(tab_df.head(), use_container_width=True)
+                _preview_dataframe(tab_df)
             if img_up is not None:
                 img_df = pd.read_csv(img_up)
                 st.session_state["mm_image_df"] = img_df
-                st.dataframe(img_df.head(), use_container_width=True)
+                _preview_dataframe(img_df)
             if sens_up is not None:
                 sens_df = pd.read_csv(sens_up)
                 st.session_state["mm_sensor_df"] = sens_df
-                st.dataframe(sens_df.head(), use_container_width=True)
+                _preview_dataframe(sens_df)
 
             has_any = any(
                 st.session_state.get(k) is not None for k in ["mm_tabular_df", "mm_image_df", "mm_sensor_df"]
@@ -1294,7 +1348,7 @@ def show():
                         st.success(
                             f"✅ Loaded multimodal data ({combined.shape[0]} rows × {combined.shape[1]} columns)"
                         )
-                        st.dataframe(combined.head(), use_container_width=True)
+                        _preview_dataframe(combined)
         else:
             st.markdown(
                 "Upload the raw assets (ZIP + manifest) exported by the simulator or your own pipeline."
@@ -1422,7 +1476,7 @@ def show():
                         if image_df is not None and id_col in image_df.columns:
                             _canonicalize_id_column(image_df, id_col)
                         st.session_state["mm_image_df"] = image_df
-                        st.dataframe(image_df.head(), use_container_width=True)
+                        _preview_dataframe(image_df)
                     except Exception as exc:
                         st.error(f"Image processing failed: {exc}")
                         image_df = None
@@ -1452,12 +1506,17 @@ def show():
                         if sensor_df is not None and id_col in sensor_df.columns:
                             _canonicalize_id_column(sensor_df, id_col)
                         st.session_state["mm_sensor_df"] = sensor_df
-                        st.dataframe(sensor_df.head(), use_container_width=True)
+                        _preview_dataframe(sensor_df)
                     except Exception as exc:
                         st.error(f"Sensor processing failed: {exc}")
                         sensor_df = None
 
                 st.session_state["mm_tabular_df"] = tab_df
+
+                if image_df is None:
+                    image_df = st.session_state.get("mm_image_df")
+                if sensor_df is None:
+                    sensor_df = st.session_state.get("mm_sensor_df")
 
                 def _prep_for_merge(df, *, preserve_cols: Optional[Sequence[str]] = None):
                     if df is None or id_col not in df.columns:
@@ -1529,7 +1588,7 @@ def show():
                         "ℹ️ Identifier column dropped from the working table to avoid feeding string IDs into the model. "
                         "The original ID is still preserved internally for modality alignment."
                     )
-                st.dataframe(combined_display.head(), use_container_width=True)
+                _preview_dataframe(combined_display)
 
     # ===================== 1) Data upload & preview ===========================
     with st.expander("📘 Step-by-Step Guide for Tabular Data", expanded=False):
@@ -1811,30 +1870,37 @@ def show():
             "Features in set I are protected by the expert penalty; other features are softly suppressed unless justified by TEXGI."
         )
 
-        st.markdown("#### Directional / magnitude constraints (optional)")
-        # Prepare blank editor with choices
-        options_relation = ["none", ">=mean", "<=mean"]
-        options_sign = [-1, 0, +1]
+        cols_con = st.columns([0.94, 0.06])
+        with cols_con[0]:
+            st.markdown("#### Directional / magnitude constraints (optional)")
+        with cols_con[1]:
+            _render_help_tooltip(_qhelp_md("texgi_constraints"), "help_texgi_constraints")
+        st.caption(
+            "The current MySA release only supports encouraging minimum TEXGI magnitude per feature. "
+            "Directional/sign constraints are not yet available."
+        )
 
-        # Seed table with Top-10 placeholders (feature dropdowns)
+        # Seed table with a few editable rows prioritising expert-marked features
+        base_rows = list(dict.fromkeys(important_features))
+        if not base_rows:
+            base_rows = [features[0]] if features else []
+        while len(base_rows) < 5:
+            base_rows.append("")
+
         seed = pd.DataFrame({
-            "feature": (features + [""]*10)[:10],
-            "relation": ["none"]*10,
-            "sign": [0]*10,
-            "min_mag": [0.0]*10,
-            "weight": [1.0]*10,
+            "feature": base_rows,
+            "importance_floor": [0.0] * len(base_rows),
+            "weight": [1.0] * len(base_rows),
         })
         edited = st.data_editor(
             seed,
             column_config={
                 "feature": st.column_config.SelectboxColumn("feature", options=features, help="Choose a feature"),
-                "relation": st.column_config.SelectboxColumn("relation", options=options_relation),
-                "sign": st.column_config.SelectboxColumn("sign", options=options_sign),
-                "min_mag": st.column_config.NumberColumn("min_mag", step=0.01, format="%.3f"),
-                "weight": st.column_config.NumberColumn("weight", step=0.1, format="%.2f"),
+                "importance_floor": st.column_config.NumberColumn("minimum TEXGI magnitude", step=0.01, format="%.3f"),
+                "weight": st.column_config.NumberColumn("penalty weight", step=0.1, format="%.2f"),
             },
             num_rows="dynamic",
-            use_container_width=True
+            use_container_width=True,
         )
         expert_rules = _build_expert_rules_from_editor(edited, important_features)
 
