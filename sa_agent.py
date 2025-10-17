@@ -68,10 +68,10 @@ def run_sa_model(
     batch_size: int = 64,
     epochs: int = 100,
     lr: float = 0.01,
-    # —— MySA / TEXGISA 专用可选参数（按需传，不传则忽略）——
+    # Optional MySA/TEXGISA parameters forwarded to the underlying trainer when provided.
     lambda_smooth: float | None = None,
     lambda_expert: float | None = None,
-    expert_rules_json: str = "",           # 传 JSON 字符串：{"rules":[{"feature":"AGE","relation":">=mean","sign":1,"min_mag":0.01,"weight":1.0}, ...]}
+    expert_rules_json: str = "",  # JSON string such as {"rules": [{"feature": "AGE", "min_mag": 0.01, ...}]}
     ig_steps: int | None = None,
     latent_dim: int | None = None,
     extreme_dim: int | None = None,
@@ -79,18 +79,18 @@ def run_sa_model(
     gen_batch: int | None = None,
     gen_lr: float | None = None,
     gen_alpha_dist: float | None = None,
-    # —— 便捷开关：只做归因预览（把专家惩罚设为0，且限制预览轮数）——
+    # Convenience toggle: preview-only runs skip expert penalties and reduce epochs for faster responses.
     preview_only: bool = False,
     preview_epochs: int = 50
 ) -> str:
     """
-    Runs a survival model. algorithm_name ∈ {'CoxTime','DeepSurv','DeepHit','TEXGISA','MySA'}.
+    Runs a survival model. algorithm_name must be one of {'CoxTime','DeepSurv','DeepHit','TEXGISA','MySA'}.
     Use preview_only=True to compute attributions quickly (lambda_expert=0, epochs=min(epochs, preview_epochs)).
     For expert priors, pass expert_rules_json as a JSON string.
     """
     extra: Dict[str, Any] = {}
 
-    # 透传 MySA 参数（仅当不为 None/空）
+    # Forward optional MySA parameters when they are provided.
     if lambda_smooth is not None: extra["lambda_smooth"] = float(lambda_smooth)
     if lambda_expert is not None: extra["lambda_expert"] = float(lambda_expert)
     if ig_steps is not None: extra["ig_steps"] = int(ig_steps)
@@ -101,14 +101,14 @@ def run_sa_model(
     if gen_lr is not None: extra["gen_lr"] = float(gen_lr)
     if gen_alpha_dist is not None: extra["gen_alpha_dist"] = float(gen_alpha_dist)
 
-    # 解析专家规则 JSON（若提供）
+    # Parse the expert rules JSON string if present.
     if expert_rules_json:
         try:
             extra["expert_rules"] = json.loads(expert_rules_json)
         except Exception:
             extra["expert_rules"] = {"rules": []}
 
-    # 预览：不加专家惩罚，并缩短 epoch
+    # Preview mode: disable expert penalties and cap the epoch count.
     if preview_only:
         extra["lambda_expert"] = 0.0
         epochs = min(int(epochs), int(preview_epochs))
@@ -160,7 +160,7 @@ def summarize_data() -> str:
 tools = [
     suggest_actions,
     run_sa_model,
-    preview_fi,                 # <-- 新增
+    preview_fi,
     explain_algorithm,
     compare_all_algorithms,
     explain_param,

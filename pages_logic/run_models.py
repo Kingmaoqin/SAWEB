@@ -96,11 +96,14 @@ _TOOLTIP_STYLE = """
 """
 
 
-def _ensure_help_tooltip_css():
-    if not st.session_state.get("_help_tooltip_css_injected", False):
-        st.markdown(_TOOLTIP_STYLE, unsafe_allow_html=True)
-        st.session_state["_help_tooltip_css_injected"] = True
+def _render_help_tooltip(help_text: str, key: str) -> None:
+    """Legacy no-op retained for cached sessions that still reference the old tooltip helper."""
 
+    # Streamlit's native ``help=`` argument on each widget now renders the tooltip, so no
+    # additional markup is required here. The function remains to avoid NameError crashes in
+    # long-lived Streamlit processes that may call the previous implementation during reruns.
+    _ = (help_text, key)
+    return None
 def _md_explain(text: str, size: str = "1.12rem", line_height: float = 1.6):
     """Render explanatory text using a larger font size for readability."""
     st.markdown(

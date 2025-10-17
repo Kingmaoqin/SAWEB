@@ -5,12 +5,12 @@ import streamlit as st
 import pandas as pd
 from models import coxtime, deepsurv, deephit
 
-# Prefer the new MySA; fall back to legacy texgisa; allow missing
+# Prefer the modern MySA implementation; fall back to the legacy TEXGISA entry point when present.
 try:
-    from models.mysa import run_mysa as run_texgisa  # MySA 兼容旧入口名
+    from models.mysa import run_mysa as run_texgisa  # Keep legacy alias for compatibility.
 except Exception:
     try:
-        from models.texgisa import run_texgisa       # 老实现（如果你仍然保留）
+        from models.texgisa import run_texgisa  # Legacy implementation if still available.
     except Exception:
         run_texgisa = None
 
@@ -19,7 +19,7 @@ def suggest_next_actions() -> dict:
     Checks the current application state (e.g., if data is loaded) and suggests relevant next actions.
     This should be the first tool called in most conversations.
     """
-    # 确保 DataManager 存在
+    # Ensure the shared DataManager exists in the current session.
     if "data_manager" not in st.session_state:
         from sa_data_manager import DataManager
         st.session_state.data_manager = DataManager()
@@ -31,7 +31,7 @@ def suggest_next_actions() -> dict:
             "actions": []
         }
 
-    # 用会话里的 DataManager 拿摘要（不要再调模块级 sa_data_manager）
+    # Reuse the session-level DataManager to avoid reloading state between tool calls.
     summary = st.session_state.data_manager.get_data_summary()
     file_name = summary.get("file_name", "your dataset")
 
@@ -81,7 +81,7 @@ def run_survival_analysis(
     """
     Runs a specified survival analysis model on the currently loaded dataset.
     """
-    # 确保 DataManager 存在
+    # Ensure the shared DataManager exists in the current session.
     if "data_manager" not in st.session_state:
         from sa_data_manager import DataManager
         st.session_state.data_manager = DataManager()
@@ -93,11 +93,11 @@ def run_survival_analysis(
     if time_col not in data.columns or event_col not in data.columns:
         return {"error": f"Invalid column names. Ensure '{time_col}' and '{event_col}' exist in the data. Available columns are: {data.columns.tolist()}"}
 
-    # 统一列名
+    # Standardise column names so downstream training code receives the canonical schema.
     df = data.rename(columns={time_col: "duration", event_col: "event"}).copy()
     feature_cols = [c for c in df.columns if c not in ("duration", "event")]
 
-    # 通用配置
+    # Populate the base configuration shared by all algorithms.
     config = {
         "batch_size": int(batch_size),
         "epochs": int(epochs),
@@ -107,7 +107,7 @@ def run_survival_analysis(
         "feature_cols": feature_cols,
     }
 
-    # 透传 MySA/TEXGISA 的可选参数（如果调用方传了就生效）
+    # Forward optional TEXGISA parameters when provided by the caller.
     passthrough = [
         "lambda_smooth", "lambda_expert", "expert_rules",
         "ig_steps", "latent_dim", "extreme_dim",
@@ -134,7 +134,7 @@ def run_survival_analysis(
         else:
             results = {"error": f"Unknown algorithm name: {algorithm_name}"}
 
-        # 返回给 Agent 的场景只保留易序列化的内容（指标等）
+        # Return only JSON-serialisable metrics so the agent can report results cleanly.
         metrics = {k: v for k, v in results.items() if isinstance(v, (int, float, str, bool))}
         return metrics
 
@@ -160,24 +160,40 @@ def get_algorithm_explanation(algorithm_name: str) -> dict:
             "name": "DeepHit",
             "summary": "A deep learning model designed for survival analysis with competing risks.",
             "use_case": "Use when there are multiple possible event types (e.g., cardiac death vs. stroke) and you want to model the probability of each."
+        },
+        "texgisa": {
+            "name": "TEXGISA (MySA)",
+            "summary": "Generative survival analysis that couples multimodal encoders with TEXGI explanations and optional expert priors.",
+            "use_case": "Choose when you need end-to-end multimodal training or when domain experts provide priors that should regularise the hazard estimates."
+        },
+        "mysa": {
+            "name": "TEXGISA (MySA)",
+            "summary": "Generative survival analysis that couples multimodal encoders with TEXGI explanations and optional expert priors.",
+            "use_case": "Choose when you need end-to-end multimodal training or when domain experts provide priors that should regularise the hazard estimates."
         }
     }
-    return explanations.get(algorithm_name.lower(), {"error": "Algorithm not found."})
+    key = algorithm_name.lower()
+    if key == "texgisa (mysa)":
+        key = "texgisa"
+    return explanations.get(key, {"error": "Algorithm not found."})
 
 def compare_algorithms() -> dict:
     """Provides a comparison of the available survival analysis algorithms."""
     comparison_data = {
-        "headers": ["Metric", "CoxTime", "DeepSurv", "DeepHit"],
+        "headers": ["Metric", "CoxTime", "DeepSurv", "DeepHit", "TEXGISA (MySA)"],
         "rows": [
-            ["Time Complexity", "O(n²)", "O(n)", "O(nm)"],
-            ["Handles Competing Risks", "No", "No", "Yes"],
-            ["Handles Time-Varying Effects", "Yes", "No", "No"],
-            ["Interpretability", "Medium", "Low", "Low"]
+            ["Time Complexity", "O(n^2)", "O(n)", "O(nm)", "High (multimodal training)"],
+            ["Handles Competing Risks", "No", "No", "Yes", "No"],
+            ["Handles Time-Varying Effects", "Yes", "No", "No", "Yes"],
+            ["Multimodal Support", "Tabular only", "Tabular only", "Tabular only", "Tabular + raw images/sensors"],
+            ["Expert Priors", "No", "No", "No", "Yes"],
+            ["Interpretability", "Medium", "Low", "Low", "High via TEXGI"]
         ],
         "recommendations": {
             "Dynamic Effects": "CoxTime",
             "Nonlinear Patterns": "DeepSurv",
-            "Multiple Outcomes": "DeepHit"
+            "Multiple Outcomes": "DeepHit",
+            "Multimodal + Explanations": "TEXGISA (MySA)"
         }
     }
     return comparison_data
