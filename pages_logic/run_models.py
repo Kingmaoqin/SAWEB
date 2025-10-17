@@ -1676,6 +1676,11 @@ def show():
         if mm_tab_id and mm_tab_id in features:
             features = [f for f in features if f != mm_tab_id]
 
+    # Ensure the feature list is unique while preserving order.
+    if features:
+        seen = set()
+        features = [f for f in features if not (f in seen or seen.add(f))]
+
     available_cols = set(data.columns)
 
     missing_features = [f for f in features if f not in available_cols]
@@ -1773,6 +1778,15 @@ def show():
             # Copy only the feature subset.
             X = df[features].copy()
 
+            if X.columns.duplicated().any():
+                dupes = list(dict.fromkeys(X.columns[X.columns.duplicated()]))
+                st.warning(
+                    "Duplicate feature names detected; keeping the first occurrence for each of: "
+                    + ", ".join(map(str, dupes))
+                )
+                X = X.loc[:, ~X.columns.duplicated()].copy()
+                features = list(X.columns)
+
             # 1) Convert boolean-like values to 0/1 and coerce other non-numeric values to floats.
             for f in list(X.columns):
                 s = X[f]
@@ -1819,9 +1833,20 @@ def show():
                 pass
         else:
             # When auto-clean is disabled, still coerce non-numeric columns to numeric as a safety net.
+            warned_dupe = False
             for f in features:
-                if not np.issubdtype(df[f].dtype, np.number):
-                    df[f] = pd.to_numeric(df[f], errors="coerce").fillna(0.0)
+                series = df[f]
+                if isinstance(series, pd.DataFrame):
+                    if not warned_dupe:
+                        st.warning(
+                            "Duplicate feature names detected; only the first occurrence will be used during cleaning."
+                        )
+                        warned_dupe = True
+                    series = series.iloc[:, 0]
+                if not np.issubdtype(series.dtype, np.number):
+                    df[f] = pd.to_numeric(series, errors="coerce").fillna(0.0)
+                else:
+                    df[f] = series
 
     except Exception as e:
         st.error(f"Column mapping/cleaning failed: {e}")
@@ -2007,15 +2032,35 @@ def show():
             )
 
     # ===================== 5) Run =============================================
-    c_run1, c_run2 = st.columns(2)
-    with c_run1:
-        preview_clicked = st.button("👀 Preview FI (no expert priors)", use_container_width=True)
-    with c_run2:
-        train_clicked = st.button("🚀 Train with Expert Priors", use_container_width=True)
-        fast_expert = st.checkbox(
-            "Fast expert mode (lighter generator & TEXGI)",
-            value=True,
-            help=_qhelp_md("fast_mode"),
+    preview_clicked = False
+    train_clicked = False
+    fast_expert = False
+    run_clicked = False
+
+    if algo == "TEXGISA":
+        c_run1, c_run2 = st.columns(2)
+        with c_run1:
+            preview_clicked = st.button(
+                "👀 Preview FI (no expert priors)",
+                use_container_width=True,
+                help="Run a short TEXGISA pass (λ_expert=0) to preview TEXGI feature importance before full training.",
+            )
+        with c_run2:
+            train_clicked = st.button(
+                "🚀 Train with Expert Priors",
+                use_container_width=True,
+                help="Train TEXGISA with the configured expert rules and λ_expert penalty to obtain final metrics.",
+            )
+            fast_expert = st.checkbox(
+                "Fast expert mode (lighter generator & TEXGI)",
+                value=True,
+                help=_qhelp_md("fast_mode"),
+            )
+    else:
+        run_clicked = st.button(
+            f"🚀 Train {algo}",
+            use_container_width=True,
+            help=f"Train {algo} using the selected configuration.",
         )
 
 
@@ -2047,10 +2092,20 @@ def show():
 
                 # Execute the training run with the potentially adjusted configuration.
                 results = run_analysis(algo, df, cfg)
-                
+
                 st.session_state["results"] = results
                 st.success("✅ Training completed.")
-                
+
+            except Exception as e:
+                st.error(f"Run failed: {e}")
+
+    if run_clicked:
+        with st.spinner(f"Training {algo}..."):
+            try:
+                cfg = dict(config)
+                results = run_analysis(algo, df, cfg)
+                st.session_state["results"] = results
+                st.success("✅ Training completed.")
             except Exception as e:
                 st.error(f"Run failed: {e}")
 

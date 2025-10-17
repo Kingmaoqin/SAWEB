@@ -269,10 +269,12 @@ def _run_direct(algorithm_name, time_col, event_col, *, epochs=150, lr=0.01, lam
         res = run_survival_analysis(**cfg)
     st.success("Done.")
     # 从 DataManager 拿原始 df 传给 KM
-    try:
-        df_raw = st.session_state.data_manager.get_current_dataframe()
-    except Exception:
-        df_raw = None
+    dm = st.session_state.data_manager
+    get_df = getattr(dm, "get_current_dataframe", None)
+    if callable(get_df):
+        df_raw = get_df()
+    else:
+        df_raw = dm.get_data()
     _render_results(res, df_for_km=df_raw)
     st.session_state["last_results"] = res
 
@@ -349,24 +351,24 @@ def show():
             if "error" not in summary:
                 tcol, ecol = _guess_cols_from_summary(summary)
 
-            c1, c2, c3, c4 = st.columns(4)
             cols_qa = st.columns(4)
-            if cols_qa[0].button("Preview FI (TEXGISA)", use_container_width=True, disabled=not has_data):
-                t = tcol or "duration"; e = ecol or "event"
-                _run_direct("TEXGISA", t, e, epochs=80, preview=True)
-
-            if cols_qa[1].button("Train TEXGISA with priors", use_container_width=True, disabled=not has_data):
-                t = tcol or "duration"; e = ecol or "event"
+            with cols_qa[0]:
+                if st.button("Preview FI (TEXGISA)", use_container_width=True, disabled=not has_data):
+                    t = tcol or "duration"; e = ecol or "event"
+                    _run_direct("TEXGISA", t, e, epochs=80, preview=True)
+            with cols_qa[1]:
                 lam = st.number_input("λ_expert", 0.0, 5.0, 0.10, step=0.05, key="qa_lambda")
-                _run_direct("TEXGISA", t, e, epochs=150, lambda_expert=lam, preview=False)
-
-            if cols_qa[2].button("Run CoxTime", use_container_width=True, disabled=not has_data):
-                t = tcol or "duration"; e = ecol or "event"
-                _run_direct("CoxTime", t, e, epochs=120)
-
-            if cols_qa[3].button("Run DeepSurv", use_container_width=True, disabled=not has_data):
-                t = tcol or "duration"; e = ecol or "event"
-                _run_direct("DeepSurv", t, e, epochs=120)
+                if st.button("Train TEXGISA with priors", use_container_width=True, disabled=not has_data):
+                    t = tcol or "duration"; e = ecol or "event"
+                    _run_direct("TEXGISA", t, e, epochs=150, lambda_expert=lam, preview=False)
+            with cols_qa[2]:
+                if st.button("Run CoxTime", use_container_width=True, disabled=not has_data):
+                    t = tcol or "duration"; e = ecol or "event"
+                    _run_direct("CoxTime", t, e, epochs=120)
+            with cols_qa[3]:
+                if st.button("Run DeepSurv", use_container_width=True, disabled=not has_data):
+                    t = tcol or "duration"; e = ecol or "event"
+                    _run_direct("DeepSurv", t, e, epochs=120)
 
         # handle injected quick action
         if "__inject_user" in st.session_state:
