@@ -227,11 +227,11 @@ def _qhelp_md(key: str) -> str:
         "positive_label": "Event-column label that should be mapped to 1. All other values are mapped to 0 for censored observations.",
 
         # Algorithm Selection & Common Training Parameters
-        "algo":           "选择训练算法。TEXGISA 支持端到端的多模态训练（表格 + 原始图像/传感器）并输出 TEXGI 解释；CoxTime、DeepSurv、DeepHit 仅使用表格或已融合的特征表。\nSelect the training algorithm. TEXGISA is the only option that performs end-to-end multimodal training (tabular + raw images/sensors) with TEXGI explanations.",
-        "batch_size":     "每次参数更新所使用的样本数量；更大的 batch 更稳定但占用显存更高。\nNumber of samples per optimisation step; reduce if GPU memory is tight.",
-        "epochs":         "训练轮数；越大越稳定但耗时更久，建议先从 50~150 观察收敛情况。\nTotal training epochs. Larger values improve stability at the cost of runtime.",
-        "lr":             "学习率；过大易发散，过小收敛缓慢。可从 1e-3 到 1e-2 区间尝试。\nLearning rate. Too large causes oscillation, too small slows convergence.",
-        "val_split":      "The proportion of training data to be used for validation, for early stopping and best epoch selection.",
+        "algo": "Select the training algorithm. TEXGISA is the only option that supports end-to-end multimodal training on tabular data plus raw images or sensors while generating TEXGI explanations.",
+        "batch_size": "Number of samples processed per optimisation step. Larger batch sizes yield smoother gradients but increase GPU memory usage.",
+        "epochs": "Total number of training epochs. Begin with 50–150 epochs to monitor convergence before scheduling longer runs.",
+        "lr": "Learning rate for the optimiser. High values may diverge, whereas low values slow convergence. A starting range between 1e-3 and 1e-2 works well for most runs.",
+        "val_split": "Fraction of the training data reserved for validation so early stopping and best-epoch selection can operate reliably.",
 
         # DeepHit
         "num_intervals": "Number of discrete time intervals used by DeepHit and other discrete-time models. Too many intervals create sparsity; too few limit temporal resolution.",

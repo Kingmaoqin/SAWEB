@@ -28,7 +28,22 @@ class MultiTaskModel(nn.Module):
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
 
-    def forward(self, x):
+    def forward(self, x, return_embeddings: bool = False):
+        """Run the shared trunk and hazard head.
+
+        Parameters
+        ----------
+        x: torch.Tensor
+            Input features of shape ``[B, D]``.
+        return_embeddings: bool, default False
+            When ``True`` also return the hidden representation produced by the
+            shared trunk so downstream routines can reuse it for attribution
+            without re-running the model.
+        """
+
         h = self.trunk(x)
         logits = self.hazard_layer(h)
-        return torch.sigmoid(logits)
+        hazards = torch.sigmoid(logits)
+        if return_embeddings:
+            return hazards, h
+        return hazards

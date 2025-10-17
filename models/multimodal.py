@@ -166,7 +166,13 @@ class MultiModalSurvivalModel(nn.Module):
         self.fusion = nn.Sequential(nn.Linear(fused_dim, fusion_hidden), nn.ReLU())
         self.hazard_head = MultiTaskModel(input_dim=fusion_hidden, num_bins=num_bins)
 
-    def forward(self, x: Dict[str, torch.Tensor]) -> torch.Tensor:
+    def forward(
+        self,
+        x: Dict[str, torch.Tensor],
+        *,
+        return_embeddings: bool = False,
+        _modality_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         feats = []
         if self.image_encoder is not None and "image" in x:
             feats.append(self.image_encoder(x["image"]))
@@ -180,7 +186,11 @@ class MultiModalSurvivalModel(nn.Module):
 
         fused = torch.cat(feats, dim=1)
         fused = self.fusion(fused)
-        return self.hazard_head(fused)
+
+        # Ignore modality_mask since fusion already dropped missing modalities.
+        _ = _modality_mask
+        head_out = self.hazard_head(fused, return_embeddings=return_embeddings)
+        return head_out
 
     # ------------------------------------------------------------------
     def load_pretrained_backbones(
