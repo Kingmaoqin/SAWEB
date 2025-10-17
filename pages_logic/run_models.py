@@ -14,6 +14,86 @@ from typing import Any, Dict, List, Optional, Sequence, Set
 from models import coxtime, deepsurv, deephit
 from models.mysa import run_mysa as run_texgisa
 from utils.identifiers import canonicalize_series
+from html import escape
+
+_TOOLTIP_STYLE = """
+<style>
+.help-tooltip {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    border: 1px solid #7b8794;
+    color: #7b8794;
+    font-weight: 700;
+    font-size: 0.72rem;
+    margin-left: 0.35rem;
+    cursor: help;
+    background: #ffffff10;
+}
+
+.help-tooltip:focus {
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.45);
+}
+
+.help-tooltip:focus-visible {
+    outline: none;
+}
+
+.help-tooltip::after,
+.help-tooltip::before {
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.18s ease-in-out;
+}
+
+.help-tooltip:hover::after,
+.help-tooltip:focus::after,
+.help-tooltip:hover::before,
+.help-tooltip:focus::before {
+    opacity: 1;
+}
+
+.help-tooltip::after {
+    content: attr(data-tip);
+    position: absolute;
+    min-width: 200px;
+    max-width: 320px;
+    background: #1f2933;
+    color: #f5f7fa;
+    padding: 0.6rem 0.75rem;
+    border-radius: 0.5rem;
+    box-shadow: 0 10px 25px rgba(15, 23, 42, 0.22);
+    top: 125%;
+    right: 0;
+    white-space: pre-wrap;
+    line-height: 1.4;
+    z-index: 9999;
+}
+
+.help-tooltip::before {
+    content: "";
+    position: absolute;
+    top: 108%;
+    right: 8px;
+    border-left: 7px solid transparent;
+    border-right: 7px solid transparent;
+    border-bottom: 7px solid #1f2933;
+}
+
+[data-testid="column"] > div {
+    overflow: visible !important;
+}
+
+.stColumn {
+    overflow: visible !important;
+}
+</style>
+"""
 
 
 def _render_help_tooltip(help_text: str, key: str) -> None:
@@ -181,16 +261,31 @@ def _qhelp_md(key: str) -> str:
 
 
 def field_with_help(control_fn, label, help_key: str, *args, **kwargs):
-    """Attach a unified help tooltip to a Streamlit control."""
+    """
+    始终在控件右侧显示统一风格的 ❔ 提示，保持界面一致性。
+    用法不变：epochs = field_with_help(st.number_input, "Epochs", "epochs", 10, 2000, 150, step=10)
+    """
     help_msg = _qhelp_md(help_key)
-    kwargs = dict(kwargs)
-    kwargs.setdefault("help", help_msg)
-    return control_fn(label, *args, **kwargs)
+
+    c1, c2 = st.columns([0.94, 0.06])
+    with c1:
+        value = control_fn(label, *args, **kwargs)
+    with c2:
+        _render_help_tooltip(help_msg, f"help_{help_key}")
+    return value
 
 
 def uploader_with_help(label: str, *, key: str, help_text: str, **kwargs):
     """Streamlit ``file_uploader`` with a built-in help tooltip."""
     return st.file_uploader(label, key=key, help=help_text, **kwargs)
+
+
+def _preview_dataframe(df: Optional[pd.DataFrame], *, max_rows: int = 10) -> None:
+    """Display up to ``max_rows`` rows with consistent styling (handles wide tables gracefully)."""
+    if df is None:
+        return
+    rows = min(len(df), max_rows)
+    st.dataframe(df.head(rows), use_container_width=True)
 
 
 def _preview_dataframe(df: Optional[pd.DataFrame], *, max_rows: int = 10) -> None:
@@ -521,7 +616,7 @@ def _build_expert_rules_from_editor(df_rules, important_features=None):
 
         rule: Dict[str, Any] = {"feature": feat}
 
-        # Support legacy column names (min_mag) alongside the new importance_floor field.
+        # 兼容旧字段名称（min_mag）并支持新的 importance_floor
         importance_floor = None
         if "importance_floor" in row:
             importance_floor = row.get("importance_floor")
@@ -541,7 +636,7 @@ def _build_expert_rules_from_editor(df_rules, important_features=None):
             if weight is not None and weight > 0:
                 rule["weight"] = weight
 
-        # Preserve legacy fields for backward compatibility even though the UI no longer surfaces them.
+        # 以下字段用于兼容历史配置，当前 UI 不再暴露
         relation = row.get("relation") if "relation" in row else None
         if isinstance(relation, str):
             relation = relation.strip() or None
@@ -1800,8 +1895,11 @@ def show():
             "Features in set I are protected by the expert penalty; other features are softly suppressed unless justified by TEXGI."
         )
 
-        st.markdown("#### Directional / magnitude constraints (optional)")
-        st.caption(_qhelp_md("texgi_constraints"))
+        cols_con = st.columns([0.94, 0.06])
+        with cols_con[0]:
+            st.markdown("#### Directional / magnitude constraints (optional)")
+        with cols_con[1]:
+            _render_help_tooltip(_qhelp_md("texgi_constraints"), "help_texgi_constraints")
         st.caption(
             "The current MySA release only supports encouraging minimum TEXGI magnitude per feature. "
             "Directional/sign constraints are not yet available."
@@ -1822,27 +1920,12 @@ def show():
         edited = st.data_editor(
             seed,
             column_config={
-                "feature": st.column_config.SelectboxColumn(
-                    "feature",
-                    options=features,
-                    help="Choose a feature from the merged dataset.",
-                ),
-                "importance_floor": st.column_config.NumberColumn(
-                    "minimum TEXGI magnitude",
-                    step=0.01,
-                    format="%.3f",
-                    help="Lower bound enforced on TEXGI importance for this feature.",
-                ),
-                "weight": st.column_config.NumberColumn(
-                    "penalty weight",
-                    step=0.1,
-                    format="%.2f",
-                    help="Strength of the penalty when TEXGI drops below the floor (1.0 = default).",
-                ),
+                "feature": st.column_config.SelectboxColumn("feature", options=features, help="Choose a feature"),
+                "importance_floor": st.column_config.NumberColumn("minimum TEXGI magnitude", step=0.01, format="%.3f"),
+                "weight": st.column_config.NumberColumn("penalty weight", step=0.1, format="%.2f"),
             },
             num_rows="dynamic",
             use_container_width=True,
-            help="Configure minimum TEXGI magnitude floors and optional penalty weights for each selected feature.",
         )
         expert_rules = _build_expert_rules_from_editor(edited, important_features)
 
