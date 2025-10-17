@@ -585,6 +585,11 @@ def texgi_time_series(
     Compute TEXGI per time-bin, returning phi with shape [T, B, D].
     Baseline is produced by adversarial generator conditioned on (x, z, e).
     """
+    if not torch.is_tensor(X):
+        raise TypeError(
+            "texgi_time_series expects a torch.Tensor as input features; "
+            f"received {type(X).__name__}."
+        )
     device = X.device
     # prepare baseline
     if G is not None:
@@ -853,29 +858,51 @@ class MySATrainer:
             if self.lambda_expert > 0:
                 self.fit_generator_if_needed()
             with torch.enable_grad():
-                # Subsample for IG to control cost
-                B = X.shape[0] if torch.is_tensor(X) else embeddings.shape[0]
+                if torch.is_tensor(X):
+                    B = X.shape[0]
+                elif embeddings is not None and torch.is_tensor(embeddings):
+                    B = embeddings.shape[0]
+                else:
+                    raise ValueError(
+                        "TEXGI requires tensor inputs or embeddings; received type "
+                        f"{type(X).__name__}."
+                    )
+
                 sub = min(B, self.ig_batch_samples)
                 idx = torch.randperm(B, device=hazards.device)[:sub]
-                if embeddings is None:
-                    Xsub = (
-                        X[idx].detach().clone().requires_grad_(True)
-                        if torch.is_tensor(X)
-                        else None
-                    )
+
+                use_embeddings = (
+                    embeddings is not None
+                    and torch.is_tensor(embeddings)
+                    and hasattr(self.model, "forward_from_embeddings")
+                )
+
+                if use_embeddings:
+                    X_source = embeddings
                 else:
-                    Xsub = embeddings[idx].detach().clone().requires_grad_(True)
+                    if not torch.is_tensor(X):
+                        raise ValueError(
+                            "Model does not expose forward_from_embeddings; TEXGI "
+                            "must operate on tensor inputs."
+                        )
+                    X_source = X
+
+                Xsub = X_source[idx].detach().clone().requires_grad_(True)
+
                 mask_sub = None
                 if mask_t is not None:
                     mask_sub = mask_t[idx].detach()
-                forward_fn = (
-                    lambda z, modality_mask=None: self.model.forward_from_embeddings(
+
+                if use_embeddings:
+                    forward_fn = lambda z, modality_mask=None: self.model.forward_from_embeddings(  # noqa: E731
                         z,
                         modality_mask=modality_mask,
                     )
-                    if hasattr(self.model, "forward_from_embeddings")
-                    else self.model
-                )
+                    forward_kwargs = {"modality_mask": mask_sub} if mask_sub is not None else None
+                else:
+                    forward_fn = self.model
+                    forward_kwargs = None
+
                 phi = texgi_time_series(
                     forward_fn,
                     Xsub,
@@ -885,7 +912,7 @@ class MySATrainer:
                     latent_dim=self.latent_dim,
                     extreme_dim=self.extreme_dim,
                     t_sample=self.ig_time_subsample,
-                    forward_kwargs={"modality_mask": mask_sub} if mask_sub is not None else None,
+                    forward_kwargs=forward_kwargs,
                 )
 
                 if self.lambda_smooth > 0:

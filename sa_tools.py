@@ -1,6 +1,8 @@
 # sa_tools.py (New full content)
 
 import json
+from typing import Any, Dict
+
 import streamlit as st
 import pandas as pd
 from models import coxtime, deepsurv, deephit
@@ -69,6 +71,43 @@ def suggest_next_actions() -> dict:
         "actions": actions
     }
 
+def _serialise_dataframe(df: pd.DataFrame) -> Dict[str, Any]:
+    """Return a JSON-friendly payload that can be reconstructed as a DataFrame."""
+
+    data = df.to_dict(orient="split")
+    return {
+        "type": "dataframe",
+        "data": {
+            "index": list(map(_ensure_json_primitive, data["index"])),
+            "columns": [str(c) for c in data["columns"]],
+            "data": [[_ensure_json_primitive(v) for v in row] for row in data["data"]],
+        },
+    }
+
+
+def _ensure_json_primitive(value: Any) -> Any:
+    """Best-effort conversion of numpy/pandas scalars into plain Python types."""
+
+    if hasattr(value, "item"):
+        try:
+            return value.item()
+        except Exception:
+            pass
+    if isinstance(value, (pd.Timestamp, pd.Timedelta)):
+        return value.isoformat()
+    return value
+
+
+def _ensure_json_structure(obj: Any) -> Any:
+    """Recursively convert nested structures into JSON-friendly representations."""
+
+    if isinstance(obj, dict):
+        return {str(k): _ensure_json_structure(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_ensure_json_structure(v) for v in obj]
+    return _ensure_json_primitive(obj)
+
+
 def run_survival_analysis(
     algorithm_name: str,
     time_col: str,
@@ -134,9 +173,40 @@ def run_survival_analysis(
         else:
             results = {"error": f"Unknown algorithm name: {algorithm_name}"}
 
-        # Return only JSON-serialisable metrics so the agent can report results cleanly.
-        metrics = {k: v for k, v in results.items() if isinstance(v, (int, float, str, bool))}
-        return metrics
+        if isinstance(results, dict) and "error" in results:
+            return results
+
+        payload: Dict[str, Any] = {
+            "algorithm": algorithm_name,
+            "time_column": time_col,
+            "event_column": event_col,
+            "feature_columns": [str(c) for c in feature_cols],
+            "metrics": {},
+        }
+
+        artifacts: Dict[str, Any] = {}
+
+        for key, value in results.items():
+            if isinstance(value, (int, float)):
+                payload["metrics"][key] = _ensure_json_primitive(value)
+            elif isinstance(value, str):
+                payload.setdefault("notes", []).append(f"{key}: {value}")
+            elif isinstance(value, pd.DataFrame):
+                mapped_key = key
+                if key.lower() in {"surv_test", "survival_curves", "surv"}:
+                    mapped_key = "survival_curves"
+                elif "texgi" in key.lower() or "importance" in key.lower():
+                    mapped_key = "feature_importance"
+                artifacts[mapped_key] = _serialise_dataframe(value)
+            elif isinstance(value, dict):
+                payload.setdefault("details", {})[key] = _ensure_json_structure(value)
+            elif isinstance(value, (list, tuple)):
+                payload.setdefault("details", {})[key] = _ensure_json_structure(value)
+
+        if artifacts:
+            payload["artifacts"] = artifacts
+
+        return payload
 
     except Exception as e:
         import traceback

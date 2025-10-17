@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 
 import pandas as pd
 import streamlit as st
@@ -13,6 +13,25 @@ from langchain_core.messages import HumanMessage, AIMessage
 # project agent & tools
 from sa_agent import sa_agent
 from sa_tools import get_data_summary, run_survival_analysis
+
+ALGORITHM_GUIDE: Dict[str, Dict[str, str]] = {
+    "TEXGISA": {
+        "summary": "Multimodal survival analysis with TEXGI explanations and optional expert priors.",
+        "best_for": "multimodal data, expert priors, attribution reporting",
+    },
+    "CoxTime": {
+        "summary": "Neural Cox model that captures time-varying effects.",
+        "best_for": "dynamic hazards over time",
+    },
+    "DeepSurv": {
+        "summary": "Deep learning extension of Cox PH for non-linear tabular relationships.",
+        "best_for": "non-linear risk patterns",
+    },
+    "DeepHit": {
+        "summary": "Neural model designed for competing risks scenarios.",
+        "best_for": "multiple event types",
+    },
+}
 
 # --- dataset state helpers (add near the top) ---
 def _dataset_state():
@@ -27,6 +46,10 @@ def _dataset_state():
 
 def _context_string():
     s = _dataset_state()
+    algo_lines = [
+        f"- {name}: {info['summary']} (best for {info['best_for']})"
+        for name, info in ALGORITHM_GUIDE.items()
+    ]
     return (
         "[STATE]\n"
         f"DATASET_LOADED={s['loaded']}\n"
@@ -35,8 +58,10 @@ def _context_string():
         "RULES:\n"
         "- If DATASET_LOADED is False, you MUST say the dataset is not loaded and ask the user to upload a CSV on the right panel.\n"
         "- Never claim to have inspected or loaded data unless DATASET_LOADED is True.\n"
-        "- If user asks to preview FI or train a model, prefer the provided lightweight commands (preview/train/run), "
-        "otherwise explicitly ask for time/event columns.\n"
+        "- When the user requests an algorithm, select from TEXGISA, CoxTime, DeepSurv, or DeepHit and confirm the time/event columns.\n"
+        "- Prefer the preview/train/run shortcuts when the user wants quick execution; otherwise ask for the time/event columns explicitly.\n"
+        "ALGORITHMS:\n"
+        + "\n".join(algo_lines)
     )
 
 # ------------------------ helpers ------------------------
@@ -187,13 +212,47 @@ def _plot_km_overall(df, limit_to_last_event=True, bin_width=0):
     ax.set_xlabel("Time"); ax.set_ylabel("Survival Probability"); ax.set_ylim(0.0, 1.05)
     st.pyplot(fig)
 
+def _coerce_dataframe(obj: Any) -> Optional[pd.DataFrame]:
+    if isinstance(obj, pd.DataFrame):
+        return obj
+    if isinstance(obj, dict):
+        if obj.get("type") == "dataframe" and isinstance(obj.get("data"), dict):
+            data = obj["data"]
+            if {"index", "columns", "data"}.issubset(data):
+                df = pd.DataFrame(data["data"], columns=data["columns"])
+                if len(data["index"]) == len(df):
+                    df.index = data["index"]
+                return df
+        try:
+            return pd.DataFrame(obj)
+        except Exception:
+            return None
+    if isinstance(obj, (list, tuple)):
+        try:
+            return pd.DataFrame(obj)
+        except Exception:
+            return None
+    return None
+
+
 def _render_results(res, df_for_km=None):
     """统一展示 key metrics / FI / 预测曲线 / KM。"""
     if not isinstance(res, dict):
-        st.write(res); return
-    # --- metrics ---
-    # --- metrics (compact dataframe) ---
-    rows = [(k, float(v)) for k, v in res.items() if isinstance(v, (int, float))]
+        st.write(res)
+        return
+    if "error" in res:
+        st.error(res["error"])
+        if res.get("trace"):
+            with st.expander("Traceback"):
+                st.code(res["trace"])
+        return
+    metrics_block = res.get("metrics") if isinstance(res.get("metrics"), dict) else None
+    metrics_source = metrics_block or {k: v for k, v in res.items() if isinstance(v, (int, float))}
+    rows = [
+        (k, float(v))
+        for k, v in metrics_source.items()
+        if isinstance(v, (int, float)) and pd.notna(v)
+    ]
     if rows:
         st.subheader("Key metrics")
 
@@ -239,18 +298,33 @@ def _render_results(res, df_for_km=None):
                 st.table(metrics_df)
             st.markdown('</div>', unsafe_allow_html=True)
 
+    notes = res.get("notes", [])
+    if notes:
+        st.info("\n\n".join(notes))
+
+    artifacts = res.get("artifacts", {}) if isinstance(res.get("artifacts"), dict) else {}
+
     # --- survival curves ---
-    if isinstance(res.get("Surv_Test"), pd.DataFrame):
+    surv_df = (
+        _coerce_dataframe(artifacts.get("survival_curves"))
+        or _coerce_dataframe(res.get("survival_curves"))
+        or _coerce_dataframe(res.get("Surv_Test"))
+    )
+    if isinstance(surv_df, pd.DataFrame) and not surv_df.empty:
         st.subheader("Predicted Survival")
-        _plot_survival_curves(res["Surv_Test"])
+        _plot_survival_curves(surv_df)
+
     # --- FI ---
-    fi = res.get("texgi_importance") or res.get("fi_table")
-    if fi is not None:
+    fi_obj = (
+        artifacts.get("feature_importance")
+        or res.get("feature_importance")
+        or res.get("texgi_importance")
+        or res.get("fi_table")
+    )
+    fi_df = _coerce_dataframe(fi_obj)
+    if fi_df is not None and not fi_df.empty:
         st.subheader("Feature Importance (TEXGI)")
-        if isinstance(fi, pd.DataFrame):
-            st.dataframe(fi.head(10))
-        else:
-            st.dataframe(pd.DataFrame(fi).head(10))
+        st.dataframe(fi_df.head(10))
     # --- KM (基于原始 df 的 duration/event) ---
     if df_for_km is not None and {"duration", "event"}.issubset(df_for_km.columns):
         st.subheader("Kaplan–Meier")
@@ -259,22 +333,55 @@ def _render_results(res, df_for_km=None):
         bin_w = c2.number_input("KM bin width (0 = none)", 0, 999999, 0)
         _plot_km_overall(df_for_km, limit_to_last_event=limit_flag, bin_width=bin_w)
 
-def _run_direct(algorithm_name, time_col, event_col, *, epochs=150, lr=0.01, lambda_expert=None, preview=False):
+def _run_direct(
+    algorithm_name,
+    time_col,
+    event_col,
+    *,
+    epochs=150,
+    lr=0.01,
+    batch_size=64,
+    lambda_expert=None,
+    preview=False,
+    show_status=True,
+):
     """不经 LLM，直接调用你的工具函数 run_survival_analysis，然后渲染结果。"""
-    cfg = dict(algorithm_name=algorithm_name, time_col=time_col, event_col=event_col,
-               epochs=int(epochs), lr=float(lr))
-    if algorithm_name == "TEXGISA":
-        cfg["lambda_expert"] = 0.0 if preview else (0.1 if lambda_expert is None else float(lambda_expert))
-    with st.spinner("Running..."):
-        res = run_survival_analysis(**cfg)
-    st.success("Done.")
-    # 从 DataManager 拿原始 df 传给 KM
+    if algorithm_name != "TEXGISA":
+        st.warning("Only TEXGISA runs without expert priors are supported on this page.")
+        return None
+
+    if lambda_expert not in (None, 0, 0.0):
+        st.info("Expert priors are disabled here; forcing λ_expert to 0.")
+
+    cfg = dict(
+        algorithm_name="TEXGISA",
+        time_col=time_col,
+        event_col=event_col,
+        epochs=int(epochs),
+        lr=float(lr),
+        batch_size=int(batch_size),
+        lambda_expert=0.0,
+    )
+    spinner = st.spinner("Running...") if show_status else None
+    if spinner:
+        spinner.__enter__()
     try:
-        df_raw = st.session_state.data_manager.get_current_dataframe()
-    except Exception:
-        df_raw = None
+        res = run_survival_analysis(**cfg)
+    finally:
+        if spinner:
+            spinner.__exit__(None, None, None)
+    if show_status:
+        st.success("Done.")
+    # 从 DataManager 拿原始 df 传给 KM
+    dm = st.session_state.data_manager
+    get_df = getattr(dm, "get_current_dataframe", None)
+    if callable(get_df):
+        df_raw = get_df()
+    else:
+        df_raw = dm.get_data()
     _render_results(res, df_for_km=df_raw)
     st.session_state["last_results"] = res
+    return res
 
 # ------------------------ main page ------------------------
 
@@ -327,11 +434,14 @@ def show():
     has_data = "error" not in st.session_state.data_manager.get_data_summary()
     if not st.session_state.chat_greeted:
         if has_data:
-            greet = ("Hello! Your dataset is loaded. You can preview TEXGI from the right, "
-                    "or type 'preview texgisa' / 'train texgisa lambda=0.1'.")
+            greet = (
+                "Hello! Your dataset is loaded. Use the quick buttons to preview TEXGI feature importance or run TEXGISA without expert priors. "
+                "You can also ask for a TEXGISA run in the chat—λ_expert is always fixed to 0 here."
+            )
         else:
-            greet = ("Hello! Please upload a CSV on the right first. Then you can preview TEXGI or train TEXGISA "
-                    "with commands like 'preview texgisa' / 'train texgisa lambda=0.1'.")
+            greet = (
+                "Hello! Please upload a CSV on the right first. Once it is loaded you can launch TEXGI previews or full TEXGISA runs without expert priors using the quick actions or chat commands."
+            )
         st.session_state.chat_messages.append(AIMessage(content=greet))
         st.session_state.chat_greeted = True
 
@@ -349,24 +459,27 @@ def show():
             if "error" not in summary:
                 tcol, ecol = _guess_cols_from_summary(summary)
 
-            c1, c2, c3, c4 = st.columns(4)
-            cols_qa = st.columns(4)
-            if cols_qa[0].button("Preview FI (TEXGISA)", use_container_width=True, disabled=not has_data):
-                t = tcol or "duration"; e = ecol or "event"
-                _run_direct("TEXGISA", t, e, epochs=80, preview=True)
-
-            if cols_qa[1].button("Train TEXGISA with priors", use_container_width=True, disabled=not has_data):
-                t = tcol or "duration"; e = ecol or "event"
-                lam = st.number_input("λ_expert", 0.0, 5.0, 0.10, step=0.05, key="qa_lambda")
-                _run_direct("TEXGISA", t, e, epochs=150, lambda_expert=lam, preview=False)
-
-            if cols_qa[2].button("Run CoxTime", use_container_width=True, disabled=not has_data):
-                t = tcol or "duration"; e = ecol or "event"
-                _run_direct("CoxTime", t, e, epochs=120)
-
-            if cols_qa[3].button("Run DeepSurv", use_container_width=True, disabled=not has_data):
-                t = tcol or "duration"; e = ecol or "event"
-                _run_direct("DeepSurv", t, e, epochs=120)
+            cols_qa = st.columns(2)
+            with cols_qa[0]:
+                if st.button(
+                    "Preview TEXGI (no priors)",
+                    use_container_width=True,
+                    disabled=not has_data,
+                    help="Run a lightweight TEXGI attribution preview with λ_expert fixed to 0.",
+                ):
+                    t = tcol or "duration"; e = ecol or "event"
+                    _run_direct("TEXGISA", t, e, epochs=80, preview=True)
+                st.caption("Quick feature importance preview without expert guidance.")
+            with cols_qa[1]:
+                if st.button(
+                    "Run TEXGISA (no priors)",
+                    use_container_width=True,
+                    disabled=not has_data,
+                    help="Train TEXGISA fully while keeping λ_expert locked at 0.",
+                ):
+                    t = tcol or "duration"; e = ecol or "event"
+                    _run_direct("TEXGISA", t, e, epochs=150, preview=False)
+                st.caption("Full training pass without expert priors.")
 
         # handle injected quick action
         if "__inject_user" in st.session_state:
@@ -375,7 +488,7 @@ def show():
             st.stop()
 
         # chat input — the agent will call tools if prompted properly
-        user_text = st.chat_input("Type a message. E.g., run TEXGISA with λ_expert=0.1")
+        user_text = st.chat_input("Type a message. E.g., run TEXGISA time=duration event=event")
         if user_text:
             text = user_text.strip()
             low = text.lower()
@@ -400,27 +513,31 @@ def show():
                 st.stop()
 
             # -------- 轻量命令：直接跑你的代码（不经 LLM） --------
-            if low.startswith("preview") or "preview_fi" in low or "feature importance" in low:
+            if (
+                low.startswith("preview")
+                or "preview_fi" in low
+                or "feature importance" in low
+                or ("texgi" in low and "preview" in low)
+            ):
                 t = _get_arg(r"time(?:_col)?\s*=\s*([\w\.\-]+)", t_guess)
                 e = _get_arg(r"event(?:_col)?\s*=\s*([\w\.\-]+)", e_guess)
                 ep = _get_arg(r"epochs\s*=\s*(\d+)", 80, int)
                 _run_direct("TEXGISA", t, e, epochs=ep, preview=True)
                 st.stop()
 
-            if low.startswith("train") and ("TEXGISA" in low or "texgisa" in low):
+            if (
+                ("texgisa" in low or "texgi" in low)
+                and (
+                    low.startswith("run")
+                    or low.startswith("train")
+                    or " run " in low
+                    or " train " in low
+                )
+            ):
                 t = _get_arg(r"time(?:_col)?\s*=\s*([\w\.\-]+)", t_guess)
                 e = _get_arg(r"event(?:_col)?\s*=\s*([\w\.\-]+)", e_guess)
-                lam = _get_arg(r"(?:lambda|lambda_expert)\s*=\s*([0-9\.]+)", 0.1, float)
                 ep = _get_arg(r"epochs\s*=\s*(\d+)", 150, int)
-                _run_direct("TEXGISA", t, e, epochs=ep, lambda_expert=lam, preview=False)
-                st.stop()
-
-            if low.startswith("run") and ("coxtime" in low or "deepsurv" in low or "deephit" in low):
-                alg = "CoxTime" if "coxtime" in low else ("DeepSurv" if "deepsurv" in low else "DeepHit")
-                t = _get_arg(r"time(?:_col)?\s*=\s*([\w\.\-]+)", t_guess)
-                e = _get_arg(r"event(?:_col)?\s*=\s*([\w\.\-]+)", e_guess)
-                ep = _get_arg(r"epochs\s*=\s*(\d+)", 120, int)
-                _run_direct(alg, t, e, epochs=ep)
+                _run_direct("TEXGISA", t, e, epochs=ep, preview=False)
                 st.stop()
 
             # 其他自由文本 -> 走 LLM（但会被 B 步的上下文“约束”）
@@ -432,34 +549,42 @@ def show():
     # ---- right: Direct run (no LLM; guaranteed to execute) ----
     with right:
         st.markdown("### 🧪 Direct Run (no LLM)")
+        st.caption("Execute TEXGISA without expert priors and view the structured results below.")
         st.markdown('<div class="side-card">', unsafe_allow_html=True)
 
         if has_data:
-            cols = st.session_state.data_manager.get_data_summary().get("column_names", [])
+            cols = st.session_state.data_manager.get_data_summary().get("column_names", []) or []
+            if not cols:
+                st.warning("No feature columns detected in the dataset. Please verify the uploaded file contains duration/event columns.")
             with st.form("direct_run_form", clear_on_submit=False):
-                algo = st.selectbox("Algorithm", ["TEXGISA", "CoxTime", "DeepSurv", "DeepHit"])
-                time_col = st.selectbox("Time column", options=cols, index=(cols.index("duration") if "duration" in cols else 0))
-                event_col = st.selectbox("Event column", options=cols, index=(cols.index("event") if "event" in cols else 0))
-                epochs = st.number_input("Epochs", 10, 1000, 150, step=10)
+                time_options = cols or ["duration"]
+                event_options = cols or ["event"]
+                time_index = time_options.index("duration") if "duration" in time_options else 0
+                event_index = event_options.index("event") if "event" in event_options else min(1, len(event_options) - 1)
+                time_col = st.selectbox("Time column", options=time_options, index=time_index)
+                event_col = st.selectbox("Event column", options=event_options, index=event_index)
+                preview = st.checkbox(
+                    "Preview mode (TEXGI only)",
+                    value=False,
+                    help="Enable for a faster TEXGI attribution preview with λ_expert fixed to 0.",
+                )
+                default_epochs = 80 if preview else 150
+                epochs = st.number_input("Epochs", 10, 1000, default_epochs, step=10)
                 lr = st.number_input("Learning rate", 1e-5, 1.0, 0.01, step=0.001, format="%.5f")
-                preview = st.checkbox("Preview FI only (λ_expert=0)", value=False)
-                lambda_expert = st.number_input("λ_expert", 0.0, 5.0, 0.10, step=0.05)
+                batch_size = st.number_input("Batch size", 8, 512, 64, step=8)
 
                 submitted = st.form_submit_button("Run now")
                 if submitted:
-                    cfg = dict(
-                        algorithm_name=("TEXGISA" if algo.startswith("TEXGISA") else algo),
-                        time_col=time_col,
-                        event_col=event_col,
-                        epochs=int(epochs),
-                        lr=float(lr),
+                    _run_direct(
+                        "TEXGISA",
+                        time_col,
+                        event_col,
+                        epochs=epochs,
+                        lr=lr,
+                        batch_size=batch_size,
+                        preview=preview,
                     )
-                    if cfg["algorithm_name"] == "TEXGISA":
-                        cfg["lambda_expert"] = 0.0 if preview else float(lambda_expert)
-                    with st.spinner("Running..."):
-                        result = run_survival_analysis(**cfg)
-                    st.success("Done.")
-                    st.json(result)
+            st.caption("Expert priors are disabled in this view; λ_expert is always set to 0.")
         else:
             st.info("Upload a CSV to enable direct runs.")
         st.markdown("</div>", unsafe_allow_html=True)
