@@ -453,33 +453,24 @@ def show():
             if "error" not in summary:
                 tcol, ecol = _guess_cols_from_summary(summary)
 
-            cols_qa = st.columns(5)
+            cols_qa = st.columns(4)
             with cols_qa[0]:
-                if st.button("Preview FI (TEXGISA)", use_container_width=True, disabled=not has_data, help="Compute TEXGI feature importance quickly with λ_expert=0."):
+                if st.button("Preview FI (TEXGISA)", use_container_width=True, disabled=not has_data):
                     t = tcol or "duration"; e = ecol or "event"
                     _run_direct("TEXGISA", t, e, epochs=80, preview=True)
-                st.caption("FI = Feature Importance via TEXGI.")
             with cols_qa[1]:
-                lam = st.number_input("λ_expert", 0.0, 5.0, 0.10, step=0.05, key="qa_lambda", help="Strength of expert priors when training TEXGISA.")
-                if st.button("Train TEXGISA with priors", use_container_width=True, disabled=not has_data, help="Full training run that honours expert priors."):
+                lam = st.number_input("λ_expert", 0.0, 5.0, 0.10, step=0.05, key="qa_lambda")
+                if st.button("Train TEXGISA with priors", use_container_width=True, disabled=not has_data):
                     t = tcol or "duration"; e = ecol or "event"
                     _run_direct("TEXGISA", t, e, epochs=150, lambda_expert=lam, preview=False)
-                st.caption("Runs TEXGISA with the selected λ_expert prior weight.")
             with cols_qa[2]:
-                if st.button("Run CoxTime", use_container_width=True, disabled=not has_data, help="Time-varying deep Cox model for dynamic hazards."):
+                if st.button("Run CoxTime", use_container_width=True, disabled=not has_data):
                     t = tcol or "duration"; e = ecol or "event"
                     _run_direct("CoxTime", t, e, epochs=120)
-                st.caption("Best when covariate effects change over time.")
             with cols_qa[3]:
-                if st.button("Run DeepSurv", use_container_width=True, disabled=not has_data, help="Deep Cox proportional hazards for non-linear risk patterns."):
+                if st.button("Run DeepSurv", use_container_width=True, disabled=not has_data):
                     t = tcol or "duration"; e = ecol or "event"
                     _run_direct("DeepSurv", t, e, epochs=120)
-                st.caption("Captures complex tabular relationships.")
-            with cols_qa[4]:
-                if st.button("Run DeepHit", use_container_width=True, disabled=not has_data, help="Competing-risks model that estimates multiple event types."):
-                    t = tcol or "duration"; e = ecol or "event"
-                    _run_direct("DeepHit", t, e, epochs=120)
-                st.caption("Use when modelling competing risks.")
 
         # handle injected quick action
         if "__inject_user" in st.session_state:
