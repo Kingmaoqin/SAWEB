@@ -346,22 +346,16 @@ def _run_direct(
     show_status=True,
 ):
     """不经 LLM，直接调用你的工具函数 run_survival_analysis，然后渲染结果。"""
-    if algorithm_name != "TEXGISA":
-        st.warning("Only TEXGISA runs without expert priors are supported on this page.")
-        return None
-
-    if lambda_expert not in (None, 0, 0.0):
-        st.info("Expert priors are disabled here; forcing λ_expert to 0.")
-
     cfg = dict(
-        algorithm_name="TEXGISA",
+        algorithm_name=algorithm_name,
         time_col=time_col,
         event_col=event_col,
         epochs=int(epochs),
         lr=float(lr),
         batch_size=int(batch_size),
-        lambda_expert=0.0,
     )
+    if algorithm_name == "TEXGISA":
+        cfg["lambda_expert"] = 0.0 if preview else (0.1 if lambda_expert is None else float(lambda_expert))
     spinner = st.spinner("Running...") if show_status else None
     if spinner:
         spinner.__enter__()
@@ -435,12 +429,12 @@ def show():
     if not st.session_state.chat_greeted:
         if has_data:
             greet = (
-                "Hello! Your dataset is loaded. Use the quick buttons to preview TEXGI feature importance or run TEXGISA without expert priors. "
-                "You can also ask for a TEXGISA run in the chat—λ_expert is always fixed to 0 here."
+                "Hello! Your dataset is loaded. Use the quick buttons for TEXGI previews or run CoxTime, DeepSurv, and DeepHit directly. "
+                "You can also type commands like 'run deepsurv time=duration event=event' for a guided workflow."
             )
         else:
             greet = (
-                "Hello! Please upload a CSV on the right first. Once it is loaded you can launch TEXGI previews or full TEXGISA runs without expert priors using the quick actions or chat commands."
+                "Hello! Please upload a CSV on the right first. Once it is loaded you can preview TEXGI feature importance or run TEXGISA, CoxTime, DeepSurv, and DeepHit using the quick actions or chat commands."
             )
         st.session_state.chat_messages.append(AIMessage(content=greet))
         st.session_state.chat_greeted = True
@@ -459,27 +453,24 @@ def show():
             if "error" not in summary:
                 tcol, ecol = _guess_cols_from_summary(summary)
 
-            cols_qa = st.columns(2)
+            cols_qa = st.columns(4)
             with cols_qa[0]:
-                if st.button(
-                    "Preview TEXGI (no priors)",
-                    use_container_width=True,
-                    disabled=not has_data,
-                    help="Run a lightweight TEXGI attribution preview with λ_expert fixed to 0.",
-                ):
+                if st.button("Preview FI (TEXGISA)", use_container_width=True, disabled=not has_data):
                     t = tcol or "duration"; e = ecol or "event"
                     _run_direct("TEXGISA", t, e, epochs=80, preview=True)
-                st.caption("Quick feature importance preview without expert guidance.")
             with cols_qa[1]:
-                if st.button(
-                    "Run TEXGISA (no priors)",
-                    use_container_width=True,
-                    disabled=not has_data,
-                    help="Train TEXGISA fully while keeping λ_expert locked at 0.",
-                ):
+                lam = st.number_input("λ_expert", 0.0, 5.0, 0.10, step=0.05, key="qa_lambda")
+                if st.button("Train TEXGISA with priors", use_container_width=True, disabled=not has_data):
                     t = tcol or "duration"; e = ecol or "event"
-                    _run_direct("TEXGISA", t, e, epochs=150, preview=False)
-                st.caption("Full training pass without expert priors.")
+                    _run_direct("TEXGISA", t, e, epochs=150, lambda_expert=lam, preview=False)
+            with cols_qa[2]:
+                if st.button("Run CoxTime", use_container_width=True, disabled=not has_data):
+                    t = tcol or "duration"; e = ecol or "event"
+                    _run_direct("CoxTime", t, e, epochs=120)
+            with cols_qa[3]:
+                if st.button("Run DeepSurv", use_container_width=True, disabled=not has_data):
+                    t = tcol or "duration"; e = ecol or "event"
+                    _run_direct("DeepSurv", t, e, epochs=120)
 
         # handle injected quick action
         if "__inject_user" in st.session_state:
@@ -549,7 +540,7 @@ def show():
     # ---- right: Direct run (no LLM; guaranteed to execute) ----
     with right:
         st.markdown("### 🧪 Direct Run (no LLM)")
-        st.caption("Execute TEXGISA without expert priors and view the structured results below.")
+        st.caption("Execute TEXGISA, CoxTime, DeepSurv, or DeepHit instantly and view the structured results below.")
         st.markdown('<div class="side-card">', unsafe_allow_html=True)
 
         if has_data:
@@ -557,34 +548,46 @@ def show():
             if not cols:
                 st.warning("No feature columns detected in the dataset. Please verify the uploaded file contains duration/event columns.")
             with st.form("direct_run_form", clear_on_submit=False):
+                algo = st.selectbox(
+                    "Algorithm",
+                    ["TEXGISA", "CoxTime", "DeepSurv", "DeepHit"],
+                    help="Choose which survival algorithm to execute without the chat agent.",
+                )
                 time_options = cols or ["duration"]
                 event_options = cols or ["event"]
                 time_index = time_options.index("duration") if "duration" in time_options else 0
                 event_index = event_options.index("event") if "event" in event_options else min(1, len(event_options) - 1)
                 time_col = st.selectbox("Time column", options=time_options, index=time_index)
                 event_col = st.selectbox("Event column", options=event_options, index=event_index)
-                preview = st.checkbox(
-                    "Preview mode (TEXGI only)",
-                    value=False,
-                    help="Enable for a faster TEXGI attribution preview with λ_expert fixed to 0.",
-                )
-                default_epochs = 80 if preview else 150
-                epochs = st.number_input("Epochs", 10, 1000, default_epochs, step=10)
+                epochs = st.number_input("Epochs", 10, 1000, 150, step=10)
                 lr = st.number_input("Learning rate", 1e-5, 1.0, 0.01, step=0.001, format="%.5f")
                 batch_size = st.number_input("Batch size", 8, 512, 64, step=8)
+                preview = st.checkbox(
+                    "Preview FI only (λ_expert=0)",
+                    value=False,
+                    help="Skip expert priors and run a lightweight TEXGI attribution preview.",
+                )
+                lambda_expert = st.number_input(
+                    "λ_expert",
+                    0.0,
+                    5.0,
+                    0.10,
+                    step=0.05,
+                    help="Regularisation weight for expert priors when running TEXGISA.",
+                )
 
                 submitted = st.form_submit_button("Run now")
                 if submitted:
                     _run_direct(
-                        "TEXGISA",
+                        "TEXGISA" if algo.startswith("TEXGISA") else algo,
                         time_col,
                         event_col,
                         epochs=epochs,
                         lr=lr,
                         batch_size=batch_size,
+                        lambda_expert=(0.0 if preview else lambda_expert),
                         preview=preview,
                     )
-            st.caption("Expert priors are disabled in this view; λ_expert is always set to 0.")
         else:
             st.info("Upload a CSV to enable direct runs.")
         st.markdown("</div>", unsafe_allow_html=True)
