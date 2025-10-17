@@ -5,9 +5,11 @@ from typing import Optional
 
 class DataManager:
     """A simple singleton-like class to manage the active dataset."""
+
     def __init__(self):
         self._data: Optional[pd.DataFrame] = None
         self._file_name: Optional[str] = None  # name of the merged/active dataset
+        self.current_file_name: Optional[str] = None
 
         # Optional DataFrames for different modalities. They default to ``None``
         # and are only populated when multimodal data is explicitly loaded.
@@ -15,15 +17,24 @@ class DataManager:
         self.image_df: Optional[pd.DataFrame] = None
         self.sensor_df: Optional[pd.DataFrame] = None
 
-    def load_data(self, data: pd.DataFrame, file_name: str): # Add file_name parameter
+    def load_data(self, data: pd.DataFrame, file_name: Optional[str] = None):
         """Loads a pandas DataFrame and its file name into the manager."""
-        print(f"Data from '{file_name}' loaded into SA Data Manager.")
+        name = file_name or "uploaded_dataset"
+        print(f"Data from '{name}' loaded into SA Data Manager.")
         self._data = data
-        self._file_name = file_name
+        self._file_name = name
+        self.current_file_name = name
 
     def get_data(self) -> Optional[pd.DataFrame]:
         """Retrieves the loaded DataFrame."""
         return self._data
+
+    def get_current_dataframe(self) -> Optional[pd.DataFrame]:
+        """Alias used by UI components expecting the active DataFrame."""
+        return self._data
+
+    def get_current_file_name(self) -> Optional[str]:
+        return self._file_name
 
     def load_multimodal_data(
         self,
@@ -66,11 +77,10 @@ class DataManager:
         ):
             return {"error": "No data has been loaded. Please upload a dataset on the 'Run Models' page."}
 
-        summary = {}
+        summary = {"file_name": self._file_name}
         if self._data is not None:
             summary.update(
                 {
-                    "file_name": self._file_name,
                     "num_rows": int(self._data.shape[0]),
                     "num_columns": int(self._data.shape[1]),
                     "column_names": self._data.columns.tolist(),

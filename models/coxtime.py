@@ -36,6 +36,14 @@ def run_coxtime(data, config):
     
     # Split data: X features and y target
     X = data.drop(columns=required_cols)
+
+    # Encode non-numeric columns globally before splitting so train/val/test stay aligned
+    non_numeric = X.select_dtypes(include=["object", "string", "category"]).columns.tolist()
+    if non_numeric:
+        X = pd.get_dummies(X, columns=non_numeric, drop_first=False)
+
+    # Ensure all values are numeric floats (booleans cast cleanly) and fill NaNs from coercion
+    X = X.apply(pd.to_numeric, errors="coerce").fillna(0.0)
     y_time = data["duration"]
     y_event = data["event"]
     
