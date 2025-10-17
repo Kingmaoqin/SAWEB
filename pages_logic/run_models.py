@@ -14,78 +14,8 @@ from typing import Any, Dict, List, Optional, Sequence, Set
 from models import coxtime, deepsurv, deephit
 from models.mysa import run_mysa as run_texgisa
 from utils.identifiers import canonicalize_series
-from html import escape
-
-_TOOLTIP_STYLE = """
-<style>
-.help-tooltip {
-    position: relative;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 18px;
-    height: 18px;
-    border-radius: 50%;
-    border: 1px solid #7b8794;
-    color: #7b8794;
-    font-weight: 700;
-    font-size: 0.72rem;
-    margin-left: 0.35rem;
-    cursor: default;
-    background: #ffffff10;
-}
-
-.help-tooltip::after,
-.help-tooltip::before {
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity 0.18s ease-in-out;
-}
-
-.help-tooltip:hover::after,
-.help-tooltip:focus::after,
-.help-tooltip:hover::before,
-.help-tooltip:focus::before {
-    opacity: 1;
-}
-
-.help-tooltip::after {
-    content: attr(data-tip);
-    position: absolute;
-    min-width: 200px;
-    max-width: 320px;
-    background: #1f2933;
-    color: #f5f7fa;
-    padding: 0.6rem 0.75rem;
-    border-radius: 0.5rem;
-    box-shadow: 0 10px 25px rgba(15, 23, 42, 0.22);
-    top: 125%;
-    right: 0;
-    white-space: pre-wrap;
-    line-height: 1.4;
-    z-index: 9999;
-}
-
-.help-tooltip::before {
-    content: "";
-    position: absolute;
-    top: 108%;
-    right: 8px;
-    border-left: 7px solid transparent;
-    border-right: 7px solid transparent;
-    border-bottom: 7px solid #1f2933;
-}
-</style>
-"""
-
-
-def _ensure_help_tooltip_css():
-    if not st.session_state.get("_help_tooltip_css_injected", False):
-        st.markdown(_TOOLTIP_STYLE, unsafe_allow_html=True)
-        st.session_state["_help_tooltip_css_injected"] = True
-
 def _md_explain(text: str, size: str = "1.12rem", line_height: float = 1.6):
-    """把解释文字放大显示。size 可改为 1.2rem/1.3rem 等。"""
+    """Render explanatory text using a larger font size for readability."""
     st.markdown(
         f"<div style='font-size:{size}; line-height:{line_height}; margin:0.25rem 0 1rem'>{text}</div>",
         unsafe_allow_html=True,
@@ -180,7 +110,7 @@ def _explain_plot(kind: str, **kwargs) -> str:
             f"On average, the importance across the shown features is {avg_imp:.4f}. "
         )
         if has_dir:
-            # 颜色与你的绘图一致：正=蓝(#60a5fa)，负=红(#f87171)
+            # Match the chart colour scheme: positive = blue (#60a5fa), negative = red (#f87171)
             msg += (
                 "Bar colors encode direction: blue indicates a positive association with hazard "
                 "(higher hazard → lower survival), and red indicates a negative association "
@@ -201,82 +131,64 @@ def _explain_plot(kind: str, **kwargs) -> str:
 
 
 def _qhelp_md(key: str) -> str:
-    """Maintain the help text (Markdown) for each parameter centrally. Add/modify as needed."""
+    """Maintain the help text (Markdown) for each parameter centrally. Add or modify entries as needed."""
     HELP = {
         # Data Mapping
-        "time_col":       "The column in the dataset representing follow-up time/survival time. Must be numeric; units are self-defined (e.g., days/months/years).",
-        "event_col":      "The event indicator column: 1=event occurred (e.g., death/recurrence), 0=censored (did not occur before the end of the study).",
-        "features":       "The feature columns to be used for modeling (excluding time and event columns).",
-        "positive_label": "Maps samples in the event column equal to this value to 1 (event occurred), and all others to 0 (censored).",
+        "time_col": "Name of the column that stores follow-up or survival time. The column must be numeric but the time units are flexible (days, months, years, and so on).",
+        "event_col": "Binary event indicator column. Use 1 when the event occurs (for example death or recurrence) and 0 when the observation is censored.",
+        "features": "Feature columns used for modeling. Do not include the time or event columns.",
+        "positive_label": "Event-column label that should be mapped to 1. All other values are mapped to 0 for censored observations.",
 
         # Algorithm Selection & Common Training Parameters
-        "algo":           "Select the training algorithm. TEXGISA is the only option that performs end-to-end multimodal training (tabular + raw images/sensors) with TEXGI explanations. CoxTime/DeepSurv/DeepHit consume tabular inputs or pre-fused feature tables only.",
-        "batch_size":     "The number of samples used for each parameter update. Can be reduced if GPU memory is tight; more stable but slower.",
-        "epochs":         "The number of training epochs. A larger value is generally more stable but takes longer. It's recommended to start with 50~150 to observe convergence.",
-        "lr":             "Learning rate. Too large can cause oscillations, too small makes training very slow. You can start with a range of 1e-3 ~ 1e-2.",
-        "val_split":      "The proportion of training data to be used for validation, for early stopping and best epoch selection.",
+        "algo": "Select the training algorithm. TEXGISA is the only option that supports end-to-end multimodal training on tabular data plus raw images or sensors while generating TEXGI explanations.",
+        "batch_size": "Number of samples processed per optimisation step. Larger batch sizes yield smoother gradients but increase GPU memory usage.",
+        "epochs": "Total number of training epochs. Begin with 50–150 epochs to monitor convergence before scheduling longer runs.",
+        "lr": "Learning rate for the optimiser. High values may diverge, whereas low values slow convergence. A starting range between 1e-3 and 1e-2 works well for most runs.",
+        "val_split": "Fraction of the training data reserved for validation so early stopping and best-epoch selection can operate reliably.",
 
         # DeepHit
-        "num_intervals":  "The number of intervals to discretize continuous time into (used only by DeepHit/discrete-time models). Too many can lead to sparsity, too few can be too coarse.",
+        "num_intervals": "Number of discrete time intervals used by DeepHit and other discrete-time models. Too many intervals create sparsity; too few limit temporal resolution.",
 
-        # MySA Regularization & Priors
-        "lambda_expert":  "The weight for the expert prior penalty (λ_expert). A larger value enforces stronger adherence to expert rules/importance; too large may sacrifice predictive performance.",
-        "lambda_smooth":  "The weight for smoothness in the time dimension (λ_smooth). Makes explanations smoother across adjacent time points; too large may mask true time-dependent effects.",
-        "important_features": "Select the expert-defined important feature set I. Features in this set are encouraged to maintain at least the average TEXGI magnitude, while features outside I are damped by the expert penalty.",
-        "fast_mode":      "Acceleration mode: Uses a lightweight generator and approximate TEXGI for a quick preview of the expert prior's effect. Results may differ slightly from the full version.",
-        "ig_steps":       "The number of integration steps for calculating Integrated Gradients (TEXGI). Larger is more accurate but slower (commonly 16~64).",
+        # MySA Regularisation & Priors
+        "lambda_expert": "Weight applied to the expert prior penalty (λ_expert). Higher values enforce the curated important feature set more strongly but may reduce predictive accuracy.",
+        "lambda_smooth": "Temporal smoothness weight (λ_smooth). Encourages TEXGI importance to vary smoothly over time but can hide sharp dynamics if set too high.",
+        "important_features": "Expert-defined important feature set that λ_expert should emphasise during training.",
+        "fast_mode": "Toggle for acceleration mode that uses an approximate TEXGI pipeline for quick previews. Disable it for production-quality training.",
+        "ig_steps": "Number of integration steps used when computing TEXGI. Increasing the value improves accuracy at the cost of additional runtime.",
+        "texgi_constraints": "Editor for TEXGI magnitude floors. Each row specifies a minimum TEXGI importance enforced when λ_expert is greater than zero. Directional limits are not available yet.",
 
         # Generator / TEXGI Advanced Parameters
-        "latent_dim":       "The dimension of the generator's noise vector (latent variable).",
-        "extreme_dim":      "The dimension of the extreme encoding vector (for modeling extreme risk directions).",
-        "gen_epochs":       "The number of training epochs for the generator (used only in TEXGI).",
-        "gen_batch":        "The batch size for generator training.",
-        "gen_lr":           "The learning rate for generator optimization.",
-        "gen_alpha_dist":   "The generator's distribution distance regularization weight α (a larger value means closer to the reference distribution).",
-        "ig_batch_samples": "The number of samples B' to draw per batch in TEXGI (larger is more stable but slower).",
-        "ig_time_subsample":"The number of time steps T' to sample each time in TEXGI (subsampling time to accelerate).",
+        "latent_dim": "Dimension of the generator latent noise vector. Larger dimensions capture more variation but usually require more data.",
+        "extreme_dim": "Dimension of the extreme encoding vector that models high-risk trajectories.",
+        "gen_epochs": "Number of generator training epochs (used only when TEXGI is enabled).",
+        "gen_batch": "Batch size used while training the generator.",
+        "gen_lr": "Learning rate for the generator optimiser.",
+        "gen_alpha_dist": "Distribution-distance regularisation weight α. Higher values keep generated samples close to the reference distribution.",
+        "ig_batch_samples": "Number of samples B' drawn per TEXGI batch. Use higher values for smoother gradients if runtime allows.",
+        "ig_time_subsample": "Number of time steps T' sampled per TEXGI pass to control integration speed.",
     }
-    return HELP.get(key, "No description available (you can add a description for this key in _qhelp_md)")
+    return HELP.get(key, "No description available (add a description for this key in _qhelp_md).")
+
 
 def field_with_help(control_fn, label, help_key: str, *args, **kwargs):
-    """
-    优先用 Streamlit 原生 help=（控件标签右侧会出现 (i) 图标）；
-    老版本没有 help= 时，右侧放一个 ❔，点击弹出说明/或在下方显示。
-    用法不变：epochs = field_with_help(st.number_input, "Epochs", "epochs", 10, 2000, 150, step=10)
-    """
+    """Attach a unified help tooltip to a Streamlit control."""
     help_msg = _qhelp_md(help_key)
-
-    # 1) 最稳：多数 st.* 控件都支持 help= 参数（官方 (i) icon）
-    try:
-        return control_fn(label, *args, help=help_msg, **kwargs)
-    except TypeError:
-        # 2) 兜底：没有 help= 的控件，用右侧 ❔（hover tooltip）
-        c1, c2 = st.columns([0.96, 0.04])  # 右侧给足空间，避免被吃掉
-        with c1:
-            val = control_fn(label, *args, **kwargs)
-        with c2:
-            _render_help_tooltip(help_msg, f"help_{help_key}")
-        return val
+    kwargs = dict(kwargs)
+    kwargs.setdefault("help", help_msg)
+    return control_fn(label, *args, **kwargs)
 
 
-def _render_help_tooltip(text: str, key: str):
-    """Render a hover-based ❔ tooltip with the supplied Markdown converted to plain text."""
-    _ensure_help_tooltip_css()
-    sanitized = escape(text, quote=True).replace("\n", "&#10;")
-    html = f"<span class='help-tooltip' id='{escape(key)}' tabindex='0' data-tip='{sanitized}'>?</span>"
-    st.markdown(html, unsafe_allow_html=True)
+def uploader_with_help(label: str, *, key: str, help_text: str, **kwargs):
+    """Streamlit ``file_uploader`` with a built-in help tooltip."""
+    return st.file_uploader(label, key=key, help=help_text, **kwargs)
 
 
-def uploader_with_help(label: str, *, key: str, help_text: str, column_ratio: Sequence[float] | None = None, **kwargs):
-    """Wrap ``st.file_uploader`` with a trailing ❔ help button."""
-    if column_ratio is None:
-        column_ratio = (0.9, 0.1)
-    cols = st.columns(column_ratio)
-    with cols[0]:
-        widget = st.file_uploader(label, key=key, **kwargs)
-    with cols[1]:
-        _render_help_tooltip(help_text, f"{key}_help")
-    return widget
+def _preview_dataframe(df: Optional[pd.DataFrame], *, max_rows: int = 10) -> None:
+    """Display up to ``max_rows`` rows with consistent styling (handles wide tables gracefully)."""
+    if df is None:
+        return
+    rows = min(len(df), max_rows)
+    st.dataframe(df.head(rows), use_container_width=True)
 
 
 CHANNEL_HELP_TEXT: Dict[str, str] = {
@@ -339,10 +251,10 @@ def _extract_fi_df(results: dict) -> pd.DataFrame | None:
             return None
         df = df.copy()
 
-        # --- 关键修复：列名统一转为字符串再做匹配 ---
+        # Normalise column names by casting them to lowercase strings for matching.
         cols_lower = [str(c).lower() for c in df.columns]
 
-        # 如果 feature 不在列里，且索引有名字/多级名，则先提到列
+        # If the feature column lives in the index (common for multi-index inputs), reset the index first.
         has_index_name = (getattr(df.index, "name", None) is not None) or (
             hasattr(df.index, "names") and any(n is not None for n in (df.index.names or []))
         )
@@ -350,55 +262,55 @@ def _extract_fi_df(results: dict) -> pd.DataFrame | None:
             df = df.reset_index()
             cols_lower = [str(c).lower() for c in df.columns]
 
-        # 构造 “小写字符串列名 -> 原列名” 的映射
+        # Map lowercase string column names back to their originals.
         colmap = {str(c).lower(): c for c in df.columns}
 
-        # 1) feature 列
+        # 1) Identify the feature column.
         feat_col = None
         for cand in ("feature", "index", "name", "variable", "feat", "feature_name"):
             if cand in colmap:
                 feat_col = colmap[cand]
                 break
         if feat_col is None:
-            # 若无显式列，尝试找一个对象列当作 feature
+            # Fallback: prefer the first object column when no explicit feature column exists.
             obj_cols = [c for c in df.columns if df[c].dtype == "O"]
             if obj_cols:
                 feat_col = obj_cols[0]
             else:
-                # 再兜底：如果第一列看起来像类别/字符串，就用它
+                # As a last resort, use the first column when it looks categorical/string-like.
                 if len(df.columns) >= 1 and df[df.columns[0]].dtype == "O":
                     feat_col = df.columns[0]
                 else:
                     return None
 
-        # 2) importance 列（考虑别名）
+        # 2) Locate the importance column, accounting for common aliases.
         imp_col = None
         for cand in ("importance", "score", "weight", "texgi", "attr", "phi", "value"):
             if cand in colmap:
                 imp_col = colmap[cand]
                 break
         if imp_col is None:
-            # 随机取一个数值列（但不能是 feature 列）
+            # Fallback: choose the first numeric column that is not the feature column.
             num_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c]) and c != feat_col]
             if num_cols:
                 imp_col = num_cols[0]
             else:
                 return None
 
-        # 3) 方向列（可选）
+        # 3) Optional directional column.
         dir_col = None
         for cand in ("directional_mean", "direction", "signed_mean", "signed"):
             if cand in colmap:
                 dir_col = colmap[cand]
                 break
 
-        # 统一重命名
+        # Rename the detected columns to the canonical schema.
         rename_map = {feat_col: "feature", imp_col: "importance"}
         if dir_col:
             rename_map[dir_col] = "directional_mean"
         df = df.rename(columns=rename_map)
 
-        # 只保留关键列，并规范类型
+        # Keep the canonical columns and normalise dtypes.
         keep = ["feature", "importance"] + (["directional_mean"] if "directional_mean" in df.columns else [])
         df = df[keep]
         df["feature"] = df["feature"].astype(str)
@@ -408,7 +320,7 @@ def _extract_fi_df(results: dict) -> pd.DataFrame | None:
         df = df.dropna(subset=["importance"])
         return df
 
-    # 1) 先按常见键名取
+    # 1) Look for well-known keys first.
     candidates = [
         "fi_table", "texgi_importance", "fi_df", "feature_importance", "texgi_fi",
         "texgi_importance_df", "TEXGI", "fi", "fi_table_full", "importance_table",
@@ -440,7 +352,7 @@ def _extract_fi_df(results: dict) -> pd.DataFrame | None:
                 except Exception:
                     pass
 
-    # 2) 兜底：在所有 values 里找 “像 FI 的 DataFrame”
+    # 2) Fallback: scan every value for something that looks like a feature-importance DataFrame.
     for v in results.values():
         if isinstance(v, pd.DataFrame):
             df = _normalize_df(v)
@@ -457,26 +369,26 @@ def _render_fi_plot(fi_df: pd.DataFrame, topn: int = 10):
         return
 
     df = fi_df.copy()
-    # 重要性列名按你当前表头：importance / directional_mean
+    # Sort by importance so the chart reflects the expected "importance"/"directional_mean" schema.
     if "importance" in df.columns:
         df = df.sort_values("importance", ascending=False)
-    # 只取前 10（不足 10 就全量）
+    # Limit the chart to the top-k rows (up to 10) for readability.
     k = min(topn, len(df))
     df_top = df.head(k)
 
-    # 类别与数值
+    # Prepare labels and values for plotting.
     y_labels = list(reversed(df_top["feature"].astype(str).tolist()))
     x_vals   = list(reversed(df_top["importance"].astype(float).tolist()))
 
-    # 如果有方向信息，用颜色区分：正（蓝）/ 负（红）
+    # When directional information exists, colour bars by sign (blue = positive, red = negative).
     colors = None
     if "directional_mean" in df_top.columns:
         signs = df_top["directional_mean"].apply(lambda v: 1 if v >= 0 else -1).tolist()
         colors = ["#60a5fa" if s > 0 else "#f87171" for s in reversed(signs)]
 
-    # 画图
+    # Render the horizontal bar chart.
     import matplotlib.pyplot as plt
-    fig_h = 4 + 0.35 * k  # 根据条数自适应高度
+    fig_h = 4 + 0.35 * k  # Adjust the figure height based on the number of rows.
     fig, ax = plt.subplots(figsize=(8, fig_h))
     ax.barh(y_labels, x_vals, color=colors)
     ax.set_xlabel("Importance")
@@ -510,7 +422,7 @@ def _inject_metrics_css():
     )
 
 def _render_metrics_block(results: dict):
-    # 组装所有数值型指标
+    # Gather every numeric metric from the results payload.
     items = []
     for k, v in results.items():
         if isinstance(v, (int, float, np.floating)):
@@ -521,7 +433,7 @@ def _render_metrics_block(results: dict):
     _inject_metrics_css()
 
 
-    # 规则：把一些常见指标漂亮展示；其余自动识别
+    # Pretty-print common metrics while falling back to numeric formatting for others.
     def _fmt_val(name, val):
         if "index" in name.lower() or "c-index" in name.lower() or "cindex" in name.lower():
             return f"{val:.4f}"
@@ -529,7 +441,7 @@ def _render_metrics_block(results: dict):
             return f"{int(round(val)):,}"
         return f"{val:.4f}"
 
-    # 渲染 KPI 卡片
+    # Render KPI cards with optional progress bars for c-index metrics.
     st.markdown('<div class="kpi-grid">', unsafe_allow_html=True)
     for name, val in items:
         bar_html = ""
@@ -548,7 +460,7 @@ def _render_metrics_block(results: dict):
         )
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # 如果需要，也保留一个“展开表格”版本
+    # Provide an expandable raw table for copy-and-paste workflows.
     with st.expander("See raw table", expanded=False):
         df = pd.DataFrame(items, columns=["Metric", "Value"]).sort_values("Metric", kind="stable")
         try:
@@ -561,7 +473,7 @@ def _render_metrics_block(results: dict):
                 },
             )
         except Exception:
-            # 兼容更旧的 Streamlit
+            # Fallback for older Streamlit versions without column_config.
             st.table(df)
 HAS_MYSA = True
 
@@ -583,31 +495,60 @@ def _ensure_binary_event(series, positive=1):
 
 def _build_expert_rules_from_editor(df_rules, important_features=None):
     """Convert data_editor dataframe to expert_rules dict expected by MySA."""
-    rules = []
+
+    rules: List[Dict[str, Any]] = []
     important_features = [str(f).strip() for f in (important_features or []) if str(f).strip()]
     result: Dict[str, Any] = {"rules": []}
     if important_features:
         result["important_features"] = important_features
     if df_rules is None or df_rules.empty:
         return result
+
     for _, row in df_rules.iterrows():
-        feat = str(row.get("feature","")).strip()
+        feat = str(row.get("feature", "")).strip()
         if not feat:
             continue
-        relation = row.get("relation", None)
-        if relation in ("none", "", None):
-            relation = None
-        sign = int(row.get("sign", 0)) if pd.notna(row.get("sign", 0)) else 0
-        min_mag = float(row.get("min_mag", 0.0)) if pd.notna(row.get("min_mag", 0.0)) else 0.0
-        weight = float(row.get("weight", 1.0)) if pd.notna(row.get("weight", 1.0)) else 1.0
-        rule = {"feature": feat, "weight": weight}
-        if relation is not None:
+
+        rule: Dict[str, Any] = {"feature": feat}
+
+        # Support legacy column names (min_mag) alongside the new importance_floor field.
+        importance_floor = None
+        if "importance_floor" in row:
+            importance_floor = row.get("importance_floor")
+        elif "min_mag" in row:
+            importance_floor = row.get("min_mag")
+        if pd.notna(importance_floor):
+            floor_val = float(importance_floor)
+            if floor_val > 0:
+                rule["importance_floor"] = floor_val
+
+        weight_val = row.get("weight", None)
+        if pd.notna(weight_val):
+            try:
+                weight = float(weight_val)
+            except (TypeError, ValueError):
+                weight = None
+            if weight is not None and weight > 0:
+                rule["weight"] = weight
+
+        # Preserve legacy fields for backward compatibility even though the UI no longer surfaces them.
+        relation = row.get("relation") if "relation" in row else None
+        if isinstance(relation, str):
+            relation = relation.strip() or None
+        if relation and relation.lower() not in {"none", ""}:
             rule["relation"] = relation
-        if sign != 0:
-            rule["sign"] = sign
-        if min_mag > 0.0:
-            rule["min_mag"] = min_mag
-        rules.append(rule)
+
+        if "sign" in row:
+            try:
+                sign = int(row.get("sign", 0))
+            except (TypeError, ValueError):
+                sign = 0
+            if sign != 0:
+                rule["sign"] = sign
+
+        if len(rule) > 1:
+            rules.append(rule)
+
     result["rules"] = rules
     return result
 
@@ -759,16 +700,16 @@ def _compute_km(durations, events, limit_to_last_event=True, bin_width=0):
     """
     durations: 1D array-like of times (float/int)
     events   : 1D array-like of {0,1}
-    limit_to_last_event: True -> 仅用到最后一个事件时间（之后全是删失，KM 不再下降）
-    bin_width: >0 时，将时间按此宽度分箱（如按月/年），用箱右端点作为时间坐标
-    返回 (t, S)，其中 t 仅包含“发生事件的时刻”的节点，使阶梯更明显
+    limit_to_last_event: if True, truncate the timeline to the last observed event (later points are censored only).
+    bin_width: when >0, bucket times using this width (for example monthly or yearly bins) and use the bin endpoint as the time coordinate.
+    Returns (t, S) where t contains only event-time nodes so the staircase curve remains clear.
     """
     import numpy as np
     d = np.asarray(durations, dtype=float)
     e = np.asarray(events, dtype=int)
 
     if bin_width and bin_width > 0:
-        # 把时间映射到 bin 的右端点（更直观）
+        # Map each time to the right edge of its bin for clearer presentation.
         d = (np.floor(d / bin_width) * bin_width).astype(float)
 
     if limit_to_last_event and (e == 1).any():
@@ -776,7 +717,7 @@ def _compute_km(durations, events, limit_to_last_event=True, bin_width=0):
         keep = d <= t_last_event
         d, e = d[keep], e[keep]
 
-    # 按时间排序
+    # Sort by time.
     order = np.argsort(d)
     d, e = d[order], e[order]
 
@@ -786,11 +727,11 @@ def _compute_km(durations, events, limit_to_last_event=True, bin_width=0):
     curve_t = [0.0]
     curve_S = [1.0]
 
-    # 只在“发生事件的时刻”更新 S；纯删失时仅减少风险集，不更新 S
+    # Update S only at event times; pure censoring reduces the risk set without changing survival.
     for tt in uniq:
         at_t = (d == tt)
-        m = at_t.sum()                # 在 tt 的总个体数（事件+删失）
-        d_events = (e[at_t] == 1).sum()  # 在 tt 的事件数
+        m = at_t.sum()                # Total individuals (events + censoring) at time tt.
+        d_events = (e[at_t] == 1).sum()  # Number of events at time tt.
         if d_events > 0 and n_at_risk > 0:
             S = S * (1.0 - d_events / n_at_risk)
             curve_t.append(float(tt))
@@ -827,7 +768,7 @@ def _plot_km_by_risk(df, surv_df, n_groups=3, limit_to_last_event=True, bin_widt
     last_surv = surv_df.iloc[-1].values
     risk = 1.0 - np.asarray(last_surv)
 
-    # 对齐索引（与之前一致）
+    # Align indices with the prediction DataFrame when possible.
     try:
         cols = surv_df.columns
         if np.issubdtype(np.array(cols).dtype, np.number):
@@ -985,11 +926,30 @@ def show():
             st.subheader("③ Generate Training Table (and optionally run a quick test with TEXGISA)")
             c3, c4, c5 = st.columns(3)
             with c3:
-                backbone = st.selectbox("Feature Backbone Network", ["resnet50"], index=0, help="Can be extended to ViT/CLIP after confirming it runs")
+                    backbone = st.selectbox(
+                        "Feature Backbone Network",
+                        ["resnet50", "resnet34", "resnet18"],
+                        index=0,
+                        help="ResNet feature extractor used for embeddings. (ViT/CLIP can be added after validation.)",
+                    )
             with c4:
-                img_bs = st.number_input("Feature Extraction Batch Size", 8, 256, 64, step=8)
+                img_bs = st.number_input(
+                    "Feature Extraction Batch Size",
+                    8,
+                    256,
+                    64,
+                    step=8,
+                    help="Number of images processed per batch while extracting embeddings.",
+                )
             with c5:
-                img_workers = st.number_input("DataLoader Parallel Workers", 0, 8, 2, step=1)
+                img_workers = st.number_input(
+                    "DataLoader Parallel Workers",
+                    0,
+                    8,
+                    2,
+                    step=1,
+                    help="Background worker count for the feature-extraction data loader.",
+                )
 
             if st.button("👉 Generate Data Table (duration/event + 2048-dim image features)", use_container_width=True):
                 try:
@@ -1007,7 +967,7 @@ def show():
                         dm.load_data(df_img, f"images+{backbone}")
                         dm.load_multimodal_data(image_df=df_img)
                     st.success(f"✅ Generated: {df_img.shape[0]} rows × {df_img.shape[1]} columns")
-                    st.dataframe(df_img.head(), use_container_width=True)
+                    _preview_dataframe(df_img)
                 except Exception as e:
                     st.error(f"Failed: {e}")
 
@@ -1124,7 +1084,11 @@ def show():
             st.session_state["senswiz_manifest"] = edited
 
             # Validate or allow using only labeled rows
-            use_only_labeled = st.checkbox("Use only samples with completed labels", value=True)
+            use_only_labeled = st.checkbox(
+                "Use only samples with completed labels",
+                value=True,
+                help="Drop rows that still contain missing duration or event labels before processing.",
+            )
             if use_only_labeled:
                 edited = edited[pd.to_numeric(edited["duration"], errors="coerce").notna()]
                 edited = edited[pd.to_numeric(edited["event"], errors="coerce").isin([0,1])]
@@ -1175,7 +1139,7 @@ def show():
                         dm.load_data(df_sens, f"sensors_fullseq")
                         dm.load_multimodal_data(sensor_df=df_sens)
                     st.success(f"✅ Generated: {df_sens.shape[0]} rows × {df_sens.shape[1]} columns")
-                    st.dataframe(df_sens.head(), use_container_width=True)
+                    _preview_dataframe(df_sens)
                 except Exception as e:
                     st.error(f"Failed: {e}")
     # === End of sensor wizard ======================================================
@@ -1217,15 +1181,15 @@ def show():
             if tab_up is not None:
                 tab_df = pd.read_csv(tab_up)
                 st.session_state["mm_tabular_df"] = tab_df
-                st.dataframe(tab_df.head(), use_container_width=True)
+                _preview_dataframe(tab_df)
             if img_up is not None:
                 img_df = pd.read_csv(img_up)
                 st.session_state["mm_image_df"] = img_df
-                st.dataframe(img_df.head(), use_container_width=True)
+                _preview_dataframe(img_df)
             if sens_up is not None:
                 sens_df = pd.read_csv(sens_up)
                 st.session_state["mm_sensor_df"] = sens_df
-                st.dataframe(sens_df.head(), use_container_width=True)
+                _preview_dataframe(sens_df)
 
             has_any = any(
                 st.session_state.get(k) is not None for k in ["mm_tabular_df", "mm_image_df", "mm_sensor_df"]
@@ -1238,18 +1202,21 @@ def show():
                         "Tabular ID column",
                         st.session_state["mm_tabular_df"].columns,
                         key="mm_tab_id",
+                        help="Identifier column in the processed tabular table used to align other modalities.",
                     )
                 if "mm_image_df" in st.session_state:
                     img_id = st.selectbox(
                         "Image ID column",
                         st.session_state["mm_image_df"].columns,
                         key="mm_img_id",
+                        help="Identifier column in the processed image table that matches the shared ID.",
                     )
                 if "mm_sensor_df" in st.session_state:
                     sens_id = st.selectbox(
                         "Sensor ID column",
                         st.session_state["mm_sensor_df"].columns,
                         key="mm_sens_id",
+                        help="Identifier column in the processed sensor table that matches the shared ID.",
                     )
 
                 if st.button("Load Multimodal Data", key="mm_load_processed"):
@@ -1294,7 +1261,7 @@ def show():
                         st.success(
                             f"✅ Loaded multimodal data ({combined.shape[0]} rows × {combined.shape[1]} columns)"
                         )
-                        st.dataframe(combined.head(), use_container_width=True)
+                        _preview_dataframe(combined)
         else:
             st.markdown(
                 "Upload the raw assets (ZIP + manifest) exported by the simulator or your own pipeline."
@@ -1345,6 +1312,7 @@ def show():
                     value=int(st.session_state.get("mm_raw_img_bs", 32)),
                     step=8,
                     key="mm_raw_img_bs",
+                    help="Batch size used when extracting image embeddings from the raw ZIP archive.",
                 )
             with c2:
                 sens_zip = uploader_with_help(
@@ -1366,6 +1334,7 @@ def show():
                     value=int(st.session_state.get("mm_raw_sensor_resample", 0)),
                     step=1,
                     key="mm_raw_sensor_resample",
+                    help="Target frequency for resampling raw sensor sequences; leave at 0 to keep native sampling.",
                 )
                 sens_max_rows = st.number_input(
                     "Max rows per sensor file (0 = all)",
@@ -1374,6 +1343,7 @@ def show():
                     value=int(st.session_state.get("mm_raw_sensor_maxrows", 0)),
                     step=1000,
                     key="mm_raw_sensor_maxrows",
+                    help="Upper limit on rows read from each sensor file to prevent oversized loads (0 keeps all rows).",
                 )
 
             if st.button("Process Raw Multimodal Assets", key="mm_process_raw"):
@@ -1422,7 +1392,7 @@ def show():
                         if image_df is not None and id_col in image_df.columns:
                             _canonicalize_id_column(image_df, id_col)
                         st.session_state["mm_image_df"] = image_df
-                        st.dataframe(image_df.head(), use_container_width=True)
+                        _preview_dataframe(image_df)
                     except Exception as exc:
                         st.error(f"Image processing failed: {exc}")
                         image_df = None
@@ -1452,12 +1422,17 @@ def show():
                         if sensor_df is not None and id_col in sensor_df.columns:
                             _canonicalize_id_column(sensor_df, id_col)
                         st.session_state["mm_sensor_df"] = sensor_df
-                        st.dataframe(sensor_df.head(), use_container_width=True)
+                        _preview_dataframe(sensor_df)
                     except Exception as exc:
                         st.error(f"Sensor processing failed: {exc}")
                         sensor_df = None
 
                 st.session_state["mm_tabular_df"] = tab_df
+
+                if image_df is None:
+                    image_df = st.session_state.get("mm_image_df")
+                if sensor_df is None:
+                    sensor_df = st.session_state.get("mm_sensor_df")
 
                 def _prep_for_merge(df, *, preserve_cols: Optional[Sequence[str]] = None):
                     if df is None or id_col not in df.columns:
@@ -1529,7 +1504,7 @@ def show():
                         "ℹ️ Identifier column dropped from the working table to avoid feeding string IDs into the model. "
                         "The original ID is still preserved internally for modality alignment."
                     )
-                st.dataframe(combined_display.head(), use_container_width=True)
+                _preview_dataframe(combined_display)
 
     # ===================== 1) Data upload & preview ===========================
     with st.expander("📘 Step-by-Step Guide for Tabular Data", expanded=False):
@@ -1617,9 +1592,9 @@ def show():
     mm_tab_id_present = bool(mm_tab_id and mm_tab_id in available_cols)
 
 
-    # Build working dataframe with required names
+    # Build the working dataframe with required column names.
     try:
-        # 先取用户选择的列并规范列名
+        # Select the requested columns and normalise their names.
         base_cols = features + [time_col, event_col]
         if mm_tab_id_present and mm_tab_id not in base_cols:
             base_cols.append(mm_tab_id)
@@ -1638,19 +1613,21 @@ def show():
         if mm_tab_id_present and mm_tab_id in df.columns:
             id_series = df[mm_tab_id].copy()
 
-        # 事件列映射为 0/1（保持你原有的正类映射逻辑）
+        # Map the event column to {0,1} while respecting the chosen positive label.
         df["event"] = _ensure_binary_event(
             df["event"],
             positive=type(df["event"].iloc[0])(event_positive)
         )
 
-        # ========== 🧹 新增：自动清洗 UI 开关 & 参数 ==========
+        # ========== 🧹 Auto-clean UI controls ==========
         st.markdown("### 🧹 Auto-clean Data")
         c0, c1, c2 = st.columns([0.45, 0.35, 0.20])
         with c0:
             auto_clean = st.checkbox(
                 "Enable auto-clean (bool→0/1, drop high-NaN/constant, Z-score)",
-                value=True, key="csv_autoclean"
+                value=True,
+                key="csv_autoclean",
+                help="Automatically coerce booleans, drop high-missing columns, and normalise features before training.",
             )
         with c1:
             nan_thresh = st.slider(
@@ -1659,9 +1636,14 @@ def show():
                 key="csv_nan_thresh"
             )
         with c2:
-            do_zscore = st.checkbox("Z-score", value=True, key="csv_zscore")
+            do_zscore = st.checkbox(
+                "Z-score",
+                value=True,
+                key="csv_zscore",
+                help="Standardise each retained feature to zero mean and unit variance after cleaning.",
+            )
 
-        # 工具函数（局部定义，避免污染全局）
+        # Helper functions scoped locally to avoid polluting the module namespace.
         import pandas as _pd
         BOOL_STR = {"true","false","t","f","yes","no","y","n","0","1"}
         def _is_bool_like(s: _pd.Series) -> bool:
@@ -1681,12 +1663,12 @@ def show():
             m = {"true":1,"t":1,"yes":1,"y":1,"1":1, "false":0,"f":0,"no":0,"n":0,"0":0}
             return s.astype(str).str.strip().str.lower().map(m).astype("float32")
 
-        # ========== 应用清洗（仅作用于用户选中的 features） ==========
+        # ========== Apply the cleaning steps to the selected feature columns ==========
         if auto_clean:
-            # 复制特征子表
+            # Copy only the feature subset.
             X = df[features].copy()
 
-            # 1) 布尔/字符串布尔 → 0/1；其它非数值尝试转数值
+            # 1) Convert boolean-like values to 0/1 and coerce other non-numeric values to floats.
             for f in list(X.columns):
                 s = X[f]
                 if _is_bool_like(s):
@@ -1694,10 +1676,10 @@ def show():
                 elif not np.issubdtype(s.dtype, np.number):
                     X[f] = _pd.to_numeric(s, errors="coerce")
 
-            # 2) 仅保留数值特征
+            # 2) Keep numeric features only.
             X = X.select_dtypes(include=["number"])
 
-            # 3) 丢弃高缺失/零方差/常数列
+            # 3) Drop columns with excessive missingness or near-zero variance.
             nan_ratio = X.isna().mean()
             std = X.std(ddof=0)
             keep_mask = (nan_ratio <= float(nan_thresh)) & (std > 1e-12)
@@ -1705,13 +1687,13 @@ def show():
             dropped_const = int((std <= 1e-12).sum())
             X = X.loc[:, keep_mask].fillna(0.0)
 
-            # 4) 可选 Z-score（全局；验证有效后可迁到 trainer 用 train-only 统计）
+            # 4) Optionally Z-score the remaining features.
             if do_zscore and X.shape[1] > 0:
                 mu = X.mean(0)
                 sigma = X.std(0).replace(0.0, 1.0)
                 X = (X - mu) / sigma
 
-            # 5) 组装回最终训练表（duration,event + 纯数值特征）
+            # 5) Reassemble the final training table (duration, event, and cleaned numeric features).
             parts = []
             if id_series is not None:
                 parts.append(id_series.to_frame(name=mm_tab_id))
@@ -1719,7 +1701,7 @@ def show():
             parts.append(X.astype("float32"))
             df = _pd.concat(parts, axis=1)
 
-            # 同步“特征列列表”供后续 config 使用
+            # Update the feature list so later configuration panels stay in sync.
             features = list(X.columns)
 
             st.info(
@@ -1731,7 +1713,7 @@ def show():
             except Exception:
                 pass
         else:
-            # 不清洗：至少把非数值特征做基本 to_numeric（保底）
+            # When auto-clean is disabled, still coerce non-numeric columns to numeric as a safety net.
             for f in features:
                 if not np.issubdtype(df[f].dtype, np.number):
                     df[f] = pd.to_numeric(df[f], errors="coerce").fillna(0.0)
@@ -1795,16 +1777,13 @@ def show():
         # Important set I selector
         prev_imp = st.session_state.get("important_features", [])
         default_imp = [f for f in prev_imp if f in features]
-        cols_imp = st.columns([0.94, 0.06])
-        with cols_imp[0]:
-            important_features = st.multiselect(
-                "Important features (set I)",
-                options=features,
-                default=default_imp,
-                key="important_features_selector",
-            )
-        with cols_imp[1]:
-            _render_help_tooltip(_qhelp_md("important_features"), "help_important_features")
+        important_features = st.multiselect(
+            "Important features (set I)",
+            options=features,
+            default=default_imp,
+            key="important_features_selector",
+            help=_qhelp_md("important_features"),
+        )
         st.session_state["important_features"] = important_features
 
         st.caption(
@@ -1812,29 +1791,48 @@ def show():
         )
 
         st.markdown("#### Directional / magnitude constraints (optional)")
-        # Prepare blank editor with choices
-        options_relation = ["none", ">=mean", "<=mean"]
-        options_sign = [-1, 0, +1]
+        st.caption(_qhelp_md("texgi_constraints"))
+        st.caption(
+            "The current MySA release only supports encouraging minimum TEXGI magnitude per feature. "
+            "Directional/sign constraints are not yet available."
+        )
 
-        # Seed table with Top-10 placeholders (feature dropdowns)
+        # Seed table with a few editable rows prioritising expert-marked features
+        base_rows = list(dict.fromkeys(important_features))
+        if not base_rows:
+            base_rows = [features[0]] if features else []
+        while len(base_rows) < 5:
+            base_rows.append("")
+
         seed = pd.DataFrame({
-            "feature": (features + [""]*10)[:10],
-            "relation": ["none"]*10,
-            "sign": [0]*10,
-            "min_mag": [0.0]*10,
-            "weight": [1.0]*10,
+            "feature": base_rows,
+            "importance_floor": [0.0] * len(base_rows),
+            "weight": [1.0] * len(base_rows),
         })
         edited = st.data_editor(
             seed,
             column_config={
-                "feature": st.column_config.SelectboxColumn("feature", options=features, help="Choose a feature"),
-                "relation": st.column_config.SelectboxColumn("relation", options=options_relation),
-                "sign": st.column_config.SelectboxColumn("sign", options=options_sign),
-                "min_mag": st.column_config.NumberColumn("min_mag", step=0.01, format="%.3f"),
-                "weight": st.column_config.NumberColumn("weight", step=0.1, format="%.2f"),
+                "feature": st.column_config.SelectboxColumn(
+                    "feature",
+                    options=features,
+                    help="Choose a feature from the merged dataset.",
+                ),
+                "importance_floor": st.column_config.NumberColumn(
+                    "minimum TEXGI magnitude",
+                    step=0.01,
+                    format="%.3f",
+                    help="Lower bound enforced on TEXGI importance for this feature.",
+                ),
+                "weight": st.column_config.NumberColumn(
+                    "penalty weight",
+                    step=0.1,
+                    format="%.2f",
+                    help="Strength of the penalty when TEXGI drops below the floor (1.0 = default).",
+                ),
             },
             num_rows="dynamic",
-            use_container_width=True
+            use_container_width=True,
+            help="Configure minimum TEXGI magnitude floors and optional penalty weights for each selected feature.",
         )
         expert_rules = _build_expert_rules_from_editor(edited, important_features)
 
@@ -1921,15 +1919,19 @@ def show():
         preview_clicked = st.button("👀 Preview FI (no expert priors)", use_container_width=True)
     with c_run2:
         train_clicked = st.button("🚀 Train with Expert Priors", use_container_width=True)
-        fast_expert = st.checkbox("Fast expert mode (lighter generator & TEXGI)", value=True)
+        fast_expert = st.checkbox(
+            "Fast expert mode (lighter generator & TEXGI)",
+            value=True,
+            help=_qhelp_md("fast_mode"),
+        )
 
 
     if preview_clicked:
         with st.spinner("Training briefly and computing attributions (λ_expert=0)..."):
             try:
                 cfg = dict(config)
-                cfg["lambda_expert"] = 0.0              # 预览时不加专家惩罚
-                # 也给个较小的预览 epoch，减少等待（你可以改成想要的值）
+                cfg["lambda_expert"] = 0.0              # Disable expert penalty during the preview pass.
+                # Use a smaller epoch count for fast previews.
                 cfg["epochs"] = min(int(cfg.get("epochs", 200)), 50)
                 results = run_analysis(algo, df, cfg)
                 st.session_state["results"] = results
@@ -1937,29 +1939,21 @@ def show():
             except Exception as e:
                 st.error(f"Preview failed: {e}")
 
-    # if train_clicked:
-    #     with st.spinner("Training with expert priors..."):
-    #         try:
-    #             results = run_analysis(algo, df, config)  # 使用当前界面设置，包括 λ_expert 和专家规则
-    #             st.session_state["results"] = results
-    #             st.success("✅ Training completed.")
-    #         except Exception as e:
-    #             st.error(f"Run failed: {e}")
     if train_clicked:
         with st.spinner("Training with expert priors..."):
             try:
-                # 创建配置的浅拷贝以进行潜在的修改
+                # Create a shallow copy of the configuration so we can adjust preview-specific knobs.
                 cfg = dict(config)
 
-                # 如果 fast_expert 为 True，则调整配置参数
+                # Reduce expensive settings when fast-expert mode is enabled.
                 if fast_expert:
                     cfg["gen_epochs"] = min(cfg.get("gen_epochs", 200), 40)
                     cfg["ig_steps"] = min(cfg.get("ig_steps", 20), 10)
                     cfg["ig_batch_samples"] = min(cfg.get("ig_batch_samples", 32), 24)
                     cfg["ig_time_subsample"] = min(cfg.get("ig_time_subsample", 8), 6)
-                
-                # 使用可能已调整的配置（cfg）运行分析
-                results = run_analysis(algo, df, cfg) 
+
+                # Execute the training run with the potentially adjusted configuration.
+                results = run_analysis(algo, df, cfg)
                 
                 st.session_state["results"] = results
                 st.success("✅ Training completed.")
@@ -1976,16 +1970,21 @@ def show():
         st.subheader("Charts")
         chart_opt = st.selectbox(
             "Select a chart to display",
-            ["Predicted Survival Trajectories", "Kaplan–Meier (overall)", "Kaplan–Meier by risk groups"]
+            ["Predicted Survival Trajectories", "Kaplan–Meier (overall)", "Kaplan–Meier by risk groups"],
+            help="Choose which diagnostic chart to render from the latest training run.",
         )
 
-        # KM 选项（仅在 KM 时显示）
+        # Configure Kaplan–Meier options when a KM chart is selected.
         limit_to_last_event = False
         km_bin_width = 0
         if chart_opt.startswith("Kaplan–Meier"):
             c1, c2 = st.columns(2)
             with c1:
-                limit_to_last_event = st.checkbox("Limit x-axis to last event time", value=True)
+                limit_to_last_event = st.checkbox(
+                    "Limit x-axis to last event time",
+                    value=True,
+                    help="Trim the Kaplan–Meier curve after the final observed event to focus on informative intervals.",
+                )
             with c2:
                 km_bin_width = st.number_input("KM bin width (0 = none)", min_value=0, value=0, step=1,
                                             help="Aggregate time into fixed-width bins (e.g., by month or year); 0 indicates no binning.")
@@ -2004,29 +2003,29 @@ def show():
 
         # Feature importance
         if isinstance(results.get("Feature Importance"), pd.DataFrame):
-            # === Feature Importance (TEXGI) — 图形化展示 + 下载 ===
+            # === Feature Importance (TEXGI) — visualisation and downloads ===
             st.subheader("Feature Importance (TEXGI)")
 
-            # 从 results 中鲁棒提取 FI 表（自动识别 fi_table / texgi_importance 等多种命名与结构）
+            # Extract the feature-importance table from results regardless of its original key or structure.
             fi_df = _extract_fi_df(results)
 
             if fi_df is None or fi_df.empty:
                 st.info("No feature importance is available in the results.")
             else:
-                # 前 10（不足 10 就全量）绘图
+                # Plot the top-k (or all) rows.
                 _render_fi_plot(fi_df, topn=10)
 
-                # “查看全部”折叠表（保留原始信息，便于检查/复制）
+                # Collapsible table that exposes the full data for inspection.
                 with st.expander("See all features", expanded=False):
                     try:
                         st.dataframe(fi_df, use_container_width=True, hide_index=True)
                     except TypeError:
                         st.dataframe(fi_df, use_container_width=True)
 
-                # 下载区：完整列表 + 单指标
+                # Download helpers for the complete table and single columns.
                 c1, c2 = st.columns([0.55, 0.45])
 
-                # 完整 CSV
+                # Full CSV export.
                 csv_full = fi_df.to_csv(index=False).encode("utf-8")
                 c1.download_button(
                     "📥 Download full FI (CSV)",
@@ -2036,11 +2035,17 @@ def show():
                     use_container_width=True,
                 )
 
-                # 选择某个指标单独导出（importance / directional_mean）
+                # Export an individual metric column (importance or directional mean).
                 metric_choices = [c for c in ["importance", "directional_mean"] if c in fi_df.columns]
                 if metric_choices:
                     with c2:
-                        metric = st.selectbox("Metric to export", metric_choices, index=0, key="fi_metric_export")
+                        metric = st.selectbox(
+                            "Metric to export",
+                            metric_choices,
+                            index=0,
+                            key="fi_metric_export",
+                            help="Choose which metric column to export as a standalone CSV.",
+                        )
                         csv_metric = fi_df[["feature", metric]].to_csv(index=False).encode("utf-8")
                         st.download_button(
                             f"📥 Download {metric} only (CSV)",
@@ -2050,7 +2055,7 @@ def show():
                             use_container_width=True,
                         )
 
-            # 若你的结果里还有“时间依赖 TEXGI（pt 张量）”的下载，保留原按钮
+            # Preserve any additional TEXGI downloads (for example time-dependent tensors) if available.
             if "texgi_time_tensor_path" in results:
                 st.download_button(
                     "📥 Download time-dependent TEXGI (pt)",

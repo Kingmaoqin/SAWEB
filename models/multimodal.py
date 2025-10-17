@@ -7,7 +7,7 @@ can be swapped out with more sophisticated encoders later on.
 
 The model consists of three encoders:
 
-* :class:`ImageEncoder` – wraps a torchvision backbone (ResNet50 or ViT) and
+* :class:`ImageEncoder` – wraps a torchvision backbone (ResNet18/50 or ViT) and
   outputs a single feature vector per image.
 * :class:`SensorEncoder` – encodes 1D sensor sequences via either a simple CNN
   stack or a Transformer encoder.
@@ -35,7 +35,7 @@ class ImageEncoder(nn.Module):
     Parameters
     ----------
     backbone: str
-        Either ``"resnet50"`` or ``"vit"`` (ViT-B/16).
+        Either ``"resnet18"``, ``"resnet50"`` or ``"vit"`` (ViT-B/16).
     pretrained: bool
         If ``True`` use ImageNet weights.
     """
@@ -43,11 +43,23 @@ class ImageEncoder(nn.Module):
     def __init__(self, backbone: str = "resnet50", pretrained: bool = True):
         super().__init__()
         name = backbone.lower()
-        if name == "resnet50":
-            from torchvision.models import resnet50, ResNet50_Weights
+        if name in {"resnet18", "resnet50"}:
+            from torchvision.models import (
+                resnet18,
+                resnet50,
+                ResNet18_Weights,
+                ResNet50_Weights,
+            )
 
-            weights = ResNet50_Weights.DEFAULT if pretrained else None
-            model = resnet50(weights=weights)
+            if name == "resnet18":
+                weights_cls = ResNet18_Weights
+                backbone_fn = resnet18
+            else:
+                weights_cls = ResNet50_Weights
+                backbone_fn = resnet50
+
+            weights = weights_cls.DEFAULT if pretrained else None
+            model = backbone_fn(weights=weights)
             self.out_dim = model.fc.in_features
             model.fc = nn.Identity()
             self.model = model
@@ -154,7 +166,13 @@ class MultiModalSurvivalModel(nn.Module):
         self.fusion = nn.Sequential(nn.Linear(fused_dim, fusion_hidden), nn.ReLU())
         self.hazard_head = MultiTaskModel(input_dim=fusion_hidden, num_bins=num_bins)
 
-    def forward(self, x: Dict[str, torch.Tensor]) -> torch.Tensor:
+    def forward(
+        self,
+        x: Dict[str, torch.Tensor],
+        *,
+        return_embeddings: bool = False,
+        _modality_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         feats = []
         if self.image_encoder is not None and "image" in x:
             feats.append(self.image_encoder(x["image"]))
@@ -168,7 +186,11 @@ class MultiModalSurvivalModel(nn.Module):
 
         fused = torch.cat(feats, dim=1)
         fused = self.fusion(fused)
-        return self.hazard_head(fused)
+
+        # Ignore modality_mask since fusion already dropped missing modalities.
+        _ = _modality_mask
+        head_out = self.hazard_head(fused, return_embeddings=return_embeddings)
+        return head_out
 
     # ------------------------------------------------------------------
     def load_pretrained_backbones(

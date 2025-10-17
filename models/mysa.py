@@ -562,7 +562,7 @@ def integrated_gradients_time(
             out.sum(),
             Xpath,
             retain_graph=False,
-            create_graph=True,
+            create_graph=False,
         )[0]
         atts_terms.append(grads)
 
@@ -755,6 +755,16 @@ class MySATrainer:
         self.ig_batch_samples = int(ig_batch_samples)
         self.ig_time_subsample = (int(ig_time_subsample) if ig_time_subsample
                                   else None)
+
+    def _move_to_device(self, obj: Any):
+        """Recursively move tensors/nested containers onto the configured device."""
+        if torch.is_tensor(obj):
+            return obj.to(self.device, non_blocking=True)
+        if isinstance(obj, dict):
+            return {k: self._move_to_device(v) for k, v in obj.items()}
+        if isinstance(obj, (list, tuple)):
+            return type(obj)(*(self._move_to_device(v) for v in obj))
+        return obj
 
     def _model_forward(
         self,
