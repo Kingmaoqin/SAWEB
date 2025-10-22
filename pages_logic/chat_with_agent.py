@@ -93,6 +93,13 @@ def _style():
         }
         .chip-row .stButton>button:hover { background: rgba(255,255,255,0.08); }
         .stChatMessage { margin-bottom: 0.6rem; }
+        .result-card {
+            border: 1px solid rgba(255,255,255,0.12);
+            border-radius: 14px;
+            padding: 1.2rem 1.4rem;
+            background: rgba(255,255,255,0.02);
+            margin-top: 1.2rem;
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -363,7 +370,8 @@ def _run_direct(
         batch_size=int(batch_size),
     )
     if algorithm_name == "TEXGISA":
-        cfg["lambda_expert"] = 0.0 if preview else (0.1 if lambda_expert is None else float(lambda_expert))
+        # Restrict TEXGISA runs to the non-expert configuration.
+        cfg["lambda_expert"] = 0.0
     spinner = st.spinner("Running...") if show_status else None
     if spinner:
         spinner.__enter__()
@@ -394,8 +402,8 @@ def _run_direct(
                 if "importance" in key.lower():
                     details.pop(key, None)
 
-    _render_results(res, df_for_km=df_raw)
     st.session_state["last_results"] = res
+    st.session_state["last_results_df"] = df_raw
     return res
 
 # ------------------------ main page ------------------------
@@ -608,3 +616,14 @@ def show():
         else:
             st.info("Upload a CSV to enable direct runs.")
         st.markdown("</div>", unsafe_allow_html=True)
+
+    # ---- full-width results panel ----
+    st.markdown("### 📊 Latest Run Results")
+    st.markdown('<div class="result-card">', unsafe_allow_html=True)
+    last_res = st.session_state.get("last_results")
+    df_for_km = st.session_state.get("last_results_df")
+    if last_res:
+        _render_results(last_res, df_for_km=df_for_km)
+    else:
+        st.info("Run any algorithm to see survival metrics, curves, and tables here.")
+    st.markdown("</div>", unsafe_allow_html=True)
