@@ -10,6 +10,8 @@ def show():
 
     with st.expander("🚀 How to Use This System (Quick Start)", expanded=True):
         st.markdown("""
+    **About this platform:** The Digital Health & Artificial Intelligence Lab Survival Analysis Platform guides clinicians through the full workflow of time-to-event modeling. Our flagship method, **TEXGISA – Interpretable and Interactive Deep Survival Analysis (TEXGISA)**, pairs transparent explanations with state-of-the-art predictive performance so medical teams can make confident, data-informed decisions.
+
     1.  **Upload your patient table**: Visit the *Model Training* or *Chat with Agent* page and upload a CSV file. It must contain a time-to-event column (e.g., follow-up months) and an event indicator (1 = event, 0 = censored).
     2.  **Confirm column names**: Map the time column to `duration` and the event column to `event`. All remaining numeric columns (lab values, vitals, therapies) will be used as model inputs automatically.
     3.  **Pick an algorithm**: Choose from CoxTime, DeepSurv, DeepHit, or **TEXGISA – Interpretable and Interactive Deep Survival Analysis**. CoxTime/DeepSurv/DeepHit follow familiar statistical or neural baselines, while TEXGISA produces clinician-friendly explanations.
