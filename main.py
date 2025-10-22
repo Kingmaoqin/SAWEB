@@ -77,7 +77,7 @@ def main():
     # 侧边栏只显示用户中心和设置，不再重复显示主导航
     with st.sidebar:
         st.title("User Center")
-        sidebar_options = ["Home", "My Datasets", "My Experiments", "My Results", "History", "Favorite Models"]
+        sidebar_options = ["Home", "Our Datasets", "Our Experiments", "Our Results", "History", "Favorite Models"]
         sidebar_selected = st.selectbox("Navigation", sidebar_options)
         if sidebar_selected != "Home":
             user_center.show()

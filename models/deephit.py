@@ -28,6 +28,11 @@ def run_deephit(data, config):
     
     # Split features and target
     X = data.drop(columns=required_cols)
+    non_numeric = X.select_dtypes(include=["object", "string", "category"]).columns.tolist()
+    if non_numeric:
+        X = pd.get_dummies(X, columns=non_numeric, drop_first=False)
+    X = X.apply(pd.to_numeric, errors="coerce").fillna(0.0)
+
     y_time = data["duration"]
     y_event = data["event"]
     

@@ -88,9 +88,9 @@ def show():
 
     # 导航选项
     options = {
-        "My Datasets": "📁",
-        "My Experiments": "🧪",
-        "My Results": "📊",
+        "Our Datasets": "📁",
+        "Our Experiments": "🧪",
+        "Our Results": "📊",
         "History": "🕒",
         "Favorite Models": "⭐"
     }
@@ -104,9 +104,9 @@ def show():
 
     # 预览内容
     content_map = {
-        "My Datasets": "🔍 Showing last 5 datasets...",
-        "My Experiments": "⏳ Loading recent experiments...",
-        "My Results": "📈 Visualizing model metrics...",
+        "Our Datasets": "🔍 Showing last 5 datasets...",
+        "Our Experiments": "⏳ Loading recent experiments...",
+        "Our Results": "📈 Visualizing model metrics...",
         "History": "🕰️ Retrieving 30-day activity...",
         "Favorite Models": "❤️ Loading saved models..."
     }

@@ -305,10 +305,17 @@ def _render_results(res, df_for_km=None):
     artifacts = res.get("artifacts", {}) if isinstance(res.get("artifacts"), dict) else {}
 
     # --- survival curves ---
-    surv_df = (
-        _coerce_dataframe(artifacts.get("survival_curves"))
-        or _coerce_dataframe(res.get("survival_curves"))
-        or _coerce_dataframe(res.get("Surv_Test"))
+    def _first_dataframe(*candidates: Any) -> Optional[pd.DataFrame]:
+        for cand in candidates:
+            df = _coerce_dataframe(cand)
+            if isinstance(df, pd.DataFrame) and not df.empty:
+                return df
+        return None
+
+    surv_df = _first_dataframe(
+        artifacts.get("survival_curves"),
+        res.get("survival_curves"),
+        res.get("Surv_Test"),
     )
     if isinstance(surv_df, pd.DataFrame) and not surv_df.empty:
         st.subheader("Predicted Survival")
@@ -323,7 +330,7 @@ def _render_results(res, df_for_km=None):
     )
     fi_df = _coerce_dataframe(fi_obj)
     if fi_df is not None and not fi_df.empty:
-        st.subheader("Feature Importance (TEXGI)")
+        st.subheader("Feature Importance (TEXGISA)")
         st.dataframe(fi_df.head(10))
     # --- KM (基于原始 df 的 duration/event) ---
     if df_for_km is not None and {"duration", "event"}.issubset(df_for_km.columns):
@@ -343,6 +350,7 @@ def _run_direct(
     batch_size=64,
     lambda_expert=None,
     preview=False,
+    include_importance=True,
     show_status=True,
 ):
     """不经 LLM，直接调用你的工具函数 run_survival_analysis，然后渲染结果。"""
@@ -373,6 +381,19 @@ def _run_direct(
         df_raw = get_df()
     else:
         df_raw = dm.get_data()
+    if isinstance(res, dict) and not include_importance:
+        res.pop("feature_importance", None)
+        artifacts = res.get("artifacts") if isinstance(res.get("artifacts"), dict) else None
+        if artifacts:
+            for key in list(artifacts.keys()):
+                if "importance" in key.lower():
+                    artifacts.pop(key, None)
+        details = res.get("details") if isinstance(res.get("details"), dict) else None
+        if details:
+            for key in list(details.keys()):
+                if "importance" in key.lower():
+                    details.pop(key, None)
+
     _render_results(res, df_for_km=df_raw)
     st.session_state["last_results"] = res
     return res
@@ -429,12 +450,12 @@ def show():
     if not st.session_state.chat_greeted:
         if has_data:
             greet = (
-                "Hello! Your dataset is loaded. Use the quick buttons for TEXGI previews or run CoxTime, DeepSurv, and DeepHit directly. "
+                "Hello! Your dataset is loaded. Use the quick buttons for TEXGISA feature-importance runs or launch CoxTime, DeepSurv, and DeepHit directly. "
                 "You can also type commands like 'run deepsurv time=duration event=event' for a guided workflow."
             )
         else:
             greet = (
-                "Hello! Please upload a CSV on the right first. Once it is loaded you can preview TEXGI feature importance or run TEXGISA, CoxTime, DeepSurv, and DeepHit using the quick actions or chat commands."
+                "Hello! Please upload a CSV on the right first. Once it is loaded you can trigger TEXGISA feature-importance training or run TEXGISA, CoxTime, DeepSurv, and DeepHit using the quick actions or chat commands."
             )
         st.session_state.chat_messages.append(AIMessage(content=greet))
         st.session_state.chat_greeted = True
@@ -455,14 +476,13 @@ def show():
 
             cols_qa = st.columns(4)
             with cols_qa[0]:
-                if st.button("Preview FI (TEXGISA)", use_container_width=True, disabled=not has_data):
+                if st.button("Train TEXGISA (with feature importance)", use_container_width=True, disabled=not has_data):
                     t = tcol or "duration"; e = ecol or "event"
-                    _run_direct("TEXGISA", t, e, epochs=80, preview=True)
+                    _run_direct("TEXGISA", t, e, epochs=150, preview=False, include_importance=True)
             with cols_qa[1]:
-                lam = st.number_input("λ_expert", 0.0, 5.0, 0.10, step=0.05, key="qa_lambda")
-                if st.button("Train TEXGISA with priors", use_container_width=True, disabled=not has_data):
+                if st.button("Train TEXGISA (without feature importance)", use_container_width=True, disabled=not has_data):
                     t = tcol or "duration"; e = ecol or "event"
-                    _run_direct("TEXGISA", t, e, epochs=150, lambda_expert=lam, preview=False)
+                    _run_direct("TEXGISA", t, e, epochs=80, preview=True, include_importance=False)
             with cols_qa[2]:
                 if st.button("Run CoxTime", use_container_width=True, disabled=not has_data):
                     t = tcol or "duration"; e = ecol or "event"
@@ -562,22 +582,19 @@ def show():
                 epochs = st.number_input("Epochs", 10, 1000, 150, step=10)
                 lr = st.number_input("Learning rate", 1e-5, 1.0, 0.01, step=0.001, format="%.5f")
                 batch_size = st.number_input("Batch size", 8, 512, 64, step=8)
-                preview = st.checkbox(
-                    "Preview FI only (λ_expert=0)",
-                    value=False,
-                    help="Skip expert priors and run a lightweight TEXGI attribution preview.",
-                )
-                lambda_expert = st.number_input(
-                    "λ_expert",
-                    0.0,
-                    5.0,
-                    0.10,
-                    step=0.05,
-                    help="Regularisation weight for expert priors when running TEXGISA.",
+                importance_mode = st.radio(
+                    "Feature importance output",
+                    (
+                        "Include TEXGISA feature importance",
+                        "Skip feature importance (faster run)",
+                    ),
+                    index=0,
+                    help="Choose whether to generate TEXGISA feature-importance tables alongside survival curves.",
                 )
 
                 submitted = st.form_submit_button("Run now")
                 if submitted:
+                    include_importance = importance_mode.startswith("Include")
                     _run_direct(
                         "TEXGISA" if algo.startswith("TEXGISA") else algo,
                         time_col,
@@ -585,8 +602,8 @@ def show():
                         epochs=epochs,
                         lr=lr,
                         batch_size=batch_size,
-                        lambda_expert=(0.0 if preview else lambda_expert),
-                        preview=preview,
+                        preview=not include_importance,
+                        include_importance=include_importance,
                     )
         else:
             st.info("Upload a CSV to enable direct runs.")
