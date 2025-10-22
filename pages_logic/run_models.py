@@ -180,7 +180,10 @@ def _explain_plot(kind: str, **kwargs) -> str:
         df = kwargs.get("df")
         import numpy as np, pandas as pd
         if df is None or not isinstance(df, pd.DataFrame) or df.empty:
-            return "This bar chart ranks features by TEXGI importance. Larger bars indicate stronger contribution to the predicted risk over time."
+            return (
+                "This bar chart ranks features by TEXGISA feature importance "
+                "(Time-dependent EXtreme Gradient Integration, TEXGI). Larger bars indicate stronger contributions to the predicted risk over time."
+            )
 
         k = int(len(df))
         top_feat = str(df.iloc[0]["feature"])
@@ -195,7 +198,7 @@ def _explain_plot(kind: str, **kwargs) -> str:
             neg = int((s < 0).sum())
 
         msg = (
-            f"This bar chart displays the top-{k} features ranked by TEXGI importance. "
+            f"This bar chart displays the top-{k} features ranked by TEXGISA feature importance (TEXGI). "
             f"The most influential feature is {top_feat} (importance {top_imp:.4f}). "
             f"On average, the importance across the shown features is {avg_imp:.4f}. "
         )
@@ -498,7 +501,7 @@ def _render_fi_plot(fi_df: pd.DataFrame, topn: int = 10):
     ax.barh(y_labels, x_vals, color=colors)
     ax.set_xlabel("Importance")
     ax.set_ylabel("")
-    ax.set_title(f"TEXGI Top-{k} Features")
+    ax.set_title(f"TEXGISA Top-{k} Features (TEXGI)")
     ax.grid(axis="x", alpha=0.2)
     st.pyplot(fig)
     # Textual explanation for FI Top-k
@@ -2043,7 +2046,7 @@ def show():
             preview_clicked = st.button(
                 "👀 Preview FI (no expert priors)",
                 use_container_width=True,
-                help="Run a short TEXGISA pass (λ_expert=0) to preview TEXGI feature importance before full training.",
+                help="Run a short TEXGISA pass (λ_expert=0) to preview TEXGISA feature importance (powered by TEXGI) before full training.",
             )
         with c_run2:
             train_clicked = st.button(
@@ -2052,7 +2055,7 @@ def show():
                 help="Train TEXGISA with the configured expert rules and λ_expert penalty to obtain final metrics.",
             )
             fast_expert = st.checkbox(
-                "Fast expert mode (lighter generator & TEXGI)",
+                "Fast expert mode (lighter generator & TEXGISA importance)",
                 value=True,
                 help=_qhelp_md("fast_mode"),
             )
@@ -2151,8 +2154,8 @@ def show():
 
         # Feature importance
         if isinstance(results.get("Feature Importance"), pd.DataFrame):
-            # === Feature Importance (TEXGI) — visualisation and downloads ===
-            st.subheader("Feature Importance (TEXGI)")
+            # === Feature Importance (TEXGISA) — visualisation and downloads ===
+            st.subheader("Feature Importance (TEXGISA)")
 
             # Extract the feature-importance table from results regardless of its original key or structure.
             fi_df = _extract_fi_df(results)
@@ -2203,10 +2206,10 @@ def show():
                             use_container_width=True,
                         )
 
-            # Preserve any additional TEXGI downloads (for example time-dependent tensors) if available.
+            # Preserve any additional TEXGISA downloads (for example time-dependent tensors) if available.
             if "texgi_time_tensor_path" in results:
                 st.download_button(
-                    "📥 Download time-dependent TEXGI (pt)",
+                    "📥 Download time-dependent TEXGISA (TEXGI, pt)",
                     data=open(results["texgi_time_tensor_path"], "rb").read(),
                     file_name="texgi_time_tensor.pt",
                     mime="application/octet-stream",
@@ -2217,7 +2220,7 @@ def show():
         if "Phi_Val_Path" in results:
             try:
                 with open(results["Phi_Val_Path"], "rb") as f:
-                    st.download_button("⬇️ Download time-dependent TEXGI (pt)", f, file_name="mysa_phi_val.pt", type="secondary")
+                    st.download_button("⬇️ Download time-dependent TEXGISA (TEXGI, pt)", f, file_name="mysa_phi_val.pt", type="secondary")
             except Exception:
                 pass
 

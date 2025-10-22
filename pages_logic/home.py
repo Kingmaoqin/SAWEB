@@ -5,23 +5,23 @@ if "data_manager" not in st.session_state:
     st.session_state.data_manager = DataManager()
 
 def show():
-    st.title("DHAI Lab Survival Analysis Platform")
+    st.title("Digital Health & Artificial Intelligence (DHAI) Lab Survival Analysis Platform")
     st.caption("You are here: Home")
 
     with st.expander("🚀 How to Use This System (Quick Start)", expanded=True):
         st.markdown("""
-    1.  **Upload Data**: Go to the Model Training page → Upload your CSV file (which must include `duration`, `event`, and feature columns).
-    2.  **Map Columns**: On the page, map the time column to `duration` and the event column to `event`. The remaining columns will be automatically used as features.
-    3.  **Select Algorithm**: Choose from the supported models: CoxTime, DeepSurv, DeepHit, or **Interpretable and Interactive Deep Survival Analysis with Time-dependent EXtreme Gradient Integration (TEXGISA)**.
-    4.  **Quick Preview** (Recommended): Select **TEXGISA** → Click **👀 Preview FI** to first calculate the TEXGI feature importance.
-    5.  **Set Priors**: Edit the rules in the *Expert Rules* table (e.g., `age >= mean, sign=+1`) and adjust the **λ_expert** value.
-    6.  **Train with Priors**: Click **🚀 Train with Expert Priors**; compare the C-index and Feature Importance to see if they meet your expectations.
-    7.  **View Charts**: In the *Charts* section, switch between the **Predicted Survival** and **Kaplan–Meier** plots.
-        """)    
+    **About this platform:** The Digital Health & Artificial Intelligence Lab Survival Analysis Platform guides clinicians through the full workflow of time-to-event modeling. Our flagship method, **TEXGISA – Interpretable and Interactive Deep Survival Analysis (TEXGISA)**, pairs transparent explanations with state-of-the-art predictive performance so medical teams can make confident, data-informed decisions.
+
+    1.  **Upload your patient table**: Visit the *Model Training* or *Chat with Agent* page and upload a CSV file. It must contain a time-to-event column (e.g., follow-up months) and an event indicator (1 = event, 0 = censored).
+    2.  **Confirm column names**: Map the time column to `duration` and the event column to `event`. All remaining numeric columns (lab values, vitals, therapies) will be used as model inputs automatically.
+    3.  **Pick an algorithm**: Choose from CoxTime, DeepSurv, DeepHit, or **TEXGISA – Interpretable and Interactive Deep Survival Analysis**. CoxTime/DeepSurv/DeepHit follow familiar statistical or neural baselines, while TEXGISA produces clinician-friendly explanations.
+    4.  **Decide on explanations**: On the Chat page you can launch TEXGISA with **feature importance** (full explanations for each variable) or **without feature importance** for a faster, metrics-only run.
+    5.  **Review the results**: Check key metrics (e.g., concordance index), predicted survival curves, and the Kaplan–Meier chart. When feature importance is enabled, TEXGISA highlights which clinical factors drive earlier or later events.
+        """)
     # Survival Analysis Introduction Section
     st.subheader("What is Survival Analysis?")
     st.markdown("""
-    **Survival Analysis** is a branch of statistics that analyzes the expected duration until one or more events occur, 
+    **Survival Analysis** is a branch of statistics that analyzes the expected duration until one or more events occur,
     widely used in medical research, engineering, economics, and more. Our specialized platform enables:
 
     - 🧠 **Interactive Education**: Learn survival analysis concepts through visual demonstrations
@@ -31,14 +31,22 @@ def show():
 
     This app serves as both a research tool and educational platform for survival analytics.
     """)
+
+    st.markdown("""
+    **Clinician quick tips:**
+
+    - Start with **TEXGISA with feature importance** to see which variables raise or lower risk over time.
+    - Use the **Kaplan–Meier** plot to compare predicted survival against familiar empirical curves.
+    - Export the tables from each page to share with your multidisciplinary team for decision support.
+    """)
     
     # Lab Focus Section
-    st.subheader("Research Focus Areas of DHAI Lab")
+    st.subheader("Research Focus Areas of the DHAI Lab")
     
     # Create expandable sections for each research topic
     with st.expander("🔍 Interactive eXplainable AI (iXAI)"):
         st.markdown("""
-        **Core Focus**: Developing AI systems that provide real-time, interactive explanations of their decision-making processes. 
+        **Core Focus**: Developing AI systems that provide real-time, interactive explanations of their decision-making processes.
         Combines causal reasoning with user feedback loops to create transparent predictive models.
         """)
         
@@ -72,9 +80,9 @@ def show():
         guided by domain expert knowledge and mechanistic understanding.
         """)
 
-    with st.expander("🤖 AI/AGI-Agent Systems"):
+    with st.expander("🤖 Artificial Intelligence / Artificial General Intelligence (AI/AGI) Agent Systems"):
         st.markdown("""
-        **Vision**: Developing autonomous reasoning systems for complex survival analysis tasks. 
+        **Vision**: Developing autonomous reasoning systems for complex survival analysis tasks.
         Focus on multi-agent collaboration and human-AI teaming paradigms.
         """)
 
