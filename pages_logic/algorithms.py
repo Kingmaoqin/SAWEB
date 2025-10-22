@@ -383,7 +383,7 @@ def show():
                     st.subheader("Frequently Asked Questions")
                     st.markdown(
                         """
-                        **Q. My feature importance (FI) directions (positive/negative impact) seem counter-intuitive. What should I do?** A. First, re-check your feature scaling and column mapping. If a feature's impact still disagrees with domain knowledge, consider increasing its `λ_expert` weight in the expert priors to guide the model correctly.
+                        **Q. Our feature importance (FI) directions (positive/negative impact) seem counter-intuitive. What should we do?** A. First, re-check your feature scaling and column mapping. If a feature's impact still disagrees with domain knowledge, consider increasing its `λ_expert` weight in the expert priors to guide the model correctly.
 
                         **Q. Kaplan-Meier curves for different risk groups predicted by the model overlap significantly.** A. This may indicate the model isn't distinguishing risk well. Try using stronger expert priors, increasing the number of time intervals, or inspecting the feature importances to see which features are failing to drive risk separation.
 

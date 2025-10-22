@@ -967,6 +967,23 @@ def _prepare_tabular_inputs(data: pd.DataFrame, config: Dict) -> Dict[str, Any]:
     feat_cols = config.get("feature_cols")
     if not feat_cols:
         feat_cols = infer_feature_cols(df, exclude=["duration", "event"])
+
+    cleaned_cols: List[str] = []
+    dropped_cols: List[str] = []
+    for col in list(feat_cols):
+        series = pd.to_numeric(df[col], errors="coerce")
+        if series.notna().sum() == 0:
+            dropped_cols.append(col)
+            df.drop(columns=[col], inplace=True)
+            continue
+        fill_value = float(series.median()) if series.notna().any() else 0.0
+        df[col] = series.fillna(fill_value).astype(np.float32)
+        cleaned_cols.append(col)
+
+    if not cleaned_cols:
+        raise ValueError("No numeric feature columns available after preprocessing.")
+
+    feat_cols = cleaned_cols
     feat2idx = {n: i for i, n in enumerate(feat_cols)}
 
     val_ratio = float(config.get("val_ratio", 0.2))
@@ -1019,6 +1036,7 @@ def _prepare_tabular_inputs(data: pd.DataFrame, config: Dict) -> Dict[str, Any]:
         "X_val": X_va,
         "mask_train": None,
         "mask_val": None,
+        "dropped_feature_columns": dropped_cols,
     }
 
 
