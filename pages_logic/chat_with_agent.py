@@ -84,6 +84,14 @@ def _style():
             padding: 0.9rem 1.0rem; 
             background: rgba(255,255,255,0.03);
         }
+        .chip-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.6rem;
+        }
+        .chip-row .stButton {
+            flex: 1 1 200px;
+        }
         .chip-row .stButton>button {
             border-radius: 999px;
             padding: 0.42rem 0.9rem;
@@ -458,12 +466,12 @@ def show():
     if not st.session_state.chat_greeted:
         if has_data:
             greet = (
-                "Hello! Your dataset is loaded. Use the quick buttons for TEXGISA feature-importance runs or launch CoxTime, DeepSurv, and DeepHit directly. "
+                "Hello! Your dataset is loaded. Use the quick buttons to launch TEXGISA (no expert priors), CoxTime, DeepSurv, or DeepHit instantly. "
                 "You can also type commands like 'run deepsurv time=duration event=event' for a guided workflow."
             )
         else:
             greet = (
-                "Hello! Please upload a CSV on the right first. Once it is loaded you can trigger TEXGISA feature-importance training or run TEXGISA, CoxTime, DeepSurv, and DeepHit using the quick actions or chat commands."
+                "Hello! Please upload a CSV on the right first. Once it is loaded you can run TEXGISA, CoxTime, DeepSurv, or DeepHit using the quick actions or chat commands."
             )
         st.session_state.chat_messages.append(AIMessage(content=greet))
         st.session_state.chat_greeted = True
@@ -484,21 +492,22 @@ def show():
 
             cols_qa = st.columns(4)
             with cols_qa[0]:
-                if st.button("Train TEXGISA (with feature importance)", use_container_width=True, disabled=not has_data):
+                if st.button("Run TEXGISA (no expert)", use_container_width=True, disabled=not has_data):
                     t = tcol or "duration"; e = ecol or "event"
-                    _run_direct("TEXGISA", t, e, epochs=150, preview=False, include_importance=True)
+                    _run_direct("TEXGISA", t, e, epochs=120, include_importance=False)
             with cols_qa[1]:
-                if st.button("Train TEXGISA (without feature importance)", use_container_width=True, disabled=not has_data):
-                    t = tcol or "duration"; e = ecol or "event"
-                    _run_direct("TEXGISA", t, e, epochs=80, preview=True, include_importance=False)
-            with cols_qa[2]:
                 if st.button("Run CoxTime", use_container_width=True, disabled=not has_data):
                     t = tcol or "duration"; e = ecol or "event"
                     _run_direct("CoxTime", t, e, epochs=120)
-            with cols_qa[3]:
+            with cols_qa[2]:
                 if st.button("Run DeepSurv", use_container_width=True, disabled=not has_data):
                     t = tcol or "duration"; e = ecol or "event"
                     _run_direct("DeepSurv", t, e, epochs=120)
+            with cols_qa[3]:
+                if st.button("Run DeepHit", use_container_width=True, disabled=not has_data):
+                    t = tcol or "duration"; e = ecol or "event"
+                    _run_direct("DeepHit", t, e, epochs=120)
+            st.markdown('</div>', unsafe_allow_html=True)
 
         # handle injected quick action
         if "__inject_user" in st.session_state:
@@ -507,7 +516,7 @@ def show():
             st.stop()
 
         # chat input — the agent will call tools if prompted properly
-        user_text = st.chat_input("Type a message. E.g., run TEXGISA time=duration event=event")
+        user_text = st.chat_input("Type a message. E.g., run DeepHit time=duration event=event")
         if user_text:
             text = user_text.strip()
             low = text.lower()
@@ -541,7 +550,7 @@ def show():
                 t = _get_arg(r"time(?:_col)?\s*=\s*([\w\.\-]+)", t_guess)
                 e = _get_arg(r"event(?:_col)?\s*=\s*([\w\.\-]+)", e_guess)
                 ep = _get_arg(r"epochs\s*=\s*(\d+)", 80, int)
-                _run_direct("TEXGISA", t, e, epochs=ep, preview=True)
+                _run_direct("TEXGISA", t, e, epochs=ep, preview=True, include_importance=False)
                 st.stop()
 
             if (
@@ -556,7 +565,7 @@ def show():
                 t = _get_arg(r"time(?:_col)?\s*=\s*([\w\.\-]+)", t_guess)
                 e = _get_arg(r"event(?:_col)?\s*=\s*([\w\.\-]+)", e_guess)
                 ep = _get_arg(r"epochs\s*=\s*(\d+)", 150, int)
-                _run_direct("TEXGISA", t, e, epochs=ep, preview=False)
+                _run_direct("TEXGISA", t, e, epochs=ep, preview=False, include_importance=False)
                 st.stop()
 
             # 其他自由文本 -> 走 LLM（但会被 B 步的上下文“约束”）
@@ -590,19 +599,11 @@ def show():
                 epochs = st.number_input("Epochs", 10, 1000, 150, step=10)
                 lr = st.number_input("Learning rate", 1e-5, 1.0, 0.01, step=0.001, format="%.5f")
                 batch_size = st.number_input("Batch size", 8, 512, 64, step=8)
-                importance_mode = st.radio(
-                    "Feature importance output",
-                    (
-                        "Include TEXGISA feature importance",
-                        "Skip feature importance (faster run)",
-                    ),
-                    index=0,
-                    help="Choose whether to generate TEXGISA feature-importance tables alongside survival curves.",
-                )
+                if algo == "TEXGISA":
+                    st.caption("TEXGISA runs use the non-expert configuration (lambda_expert=0).")
 
                 submitted = st.form_submit_button("Run now")
                 if submitted:
-                    include_importance = importance_mode.startswith("Include")
                     _run_direct(
                         "TEXGISA" if algo.startswith("TEXGISA") else algo,
                         time_col,
@@ -610,8 +611,8 @@ def show():
                         epochs=epochs,
                         lr=lr,
                         batch_size=batch_size,
-                        preview=not include_importance,
-                        include_importance=include_importance,
+                        preview=False,
+                        include_importance=False,
                     )
         else:
             st.info("Upload a CSV to enable direct runs.")
