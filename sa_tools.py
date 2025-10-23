@@ -233,12 +233,12 @@ def get_algorithm_explanation(algorithm_name: str) -> dict:
         },
         "texgisa": {
             "name": "TEXGISA (MySA)",
-            "summary": "Generative survival analysis that couples multimodal encoders with TEXGI explanations and optional expert priors.",
+            "summary": "Generative survival analysis that couples multimodal encoders with TEXGISA explanations and optional expert priors.",
             "use_case": "Choose when you need end-to-end multimodal training or when domain experts provide priors that should regularise the hazard estimates."
         },
         "mysa": {
             "name": "TEXGISA (MySA)",
-            "summary": "Generative survival analysis that couples multimodal encoders with TEXGI explanations and optional expert priors.",
+            "summary": "Generative survival analysis that couples multimodal encoders with TEXGISA explanations and optional expert priors.",
             "use_case": "Choose when you need end-to-end multimodal training or when domain experts provide priors that should regularise the hazard estimates."
         }
     }
@@ -257,7 +257,7 @@ def compare_algorithms() -> dict:
             ["Handles Time-Varying Effects", "Yes", "No", "No", "Yes"],
             ["Multimodal Support", "Tabular only", "Tabular only", "Tabular only", "Tabular + raw images/sensors"],
             ["Expert Priors", "No", "No", "No", "Yes"],
-            ["Interpretability", "Medium", "Low", "Low", "High via TEXGI"]
+            ["Interpretability", "Medium", "Low", "Low", "High via TEXGISA"]
         ],
         "recommendations": {
             "Dynamic Effects": "CoxTime",

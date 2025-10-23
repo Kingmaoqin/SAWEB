@@ -7,8 +7,8 @@ def render_mysa_tutorial():
 
     st.markdown(
         """
-**What is TEXGISA?**  
-TEXGISA is an interpretable and interactive **deep discrete-time survival** framework with **Time-dependent EXtreme Gradient Integration (TEXGI)** for explanations, plus **expert priors** built into training. It aims to deliver accurate **time-to-event** prediction while keeping explanations stable, time-aware, and aligned with domain knowledge. :contentReference[oaicite:0]{index=0}
+**What is TEXGISA?**
+TEXGISA is an interpretable and interactive **deep discrete-time survival** framework with **Time-dependent EXtreme Gradient Integration for Survival Analysis (TEXGISA)** for explanations, plus **expert priors** built into training. It aims to deliver accurate **time-to-event** prediction while keeping explanations stable, time-aware, and aligned with domain knowledge. :contentReference[oaicite:0]{index=0}
         """
     )
 
@@ -28,13 +28,13 @@ The model learns a time-indexed sequence of hazards: Dense blocks extract intera
         """
     )
 
-    st.subheader("3) TEXGI: Time-dependent EXtreme Gradient Integration")
+    st.subheader("3) TEXGISA: Time-dependent EXtreme Gradient Integration for Survival Analysis")
     st.markdown(
         """
-**Why TEXGI?** Standard IG depends on the baseline. TEXGI replaces arbitrary/zero baselines with **extreme baselines** sampled from a high-risk tail (e.g., generalized Pareto sampling), then integrates gradients **from extreme → actual input** per time interval, producing **time-specific attributions** that focus on clinically/semantically critical regions. :contentReference[oaicite:3]{index=3}
+**Why TEXGISA?** Standard IG depends on the baseline. TEXGISA replaces arbitrary/zero baselines with **extreme baselines** sampled from a high-risk tail (e.g., generalized Pareto sampling), then integrates gradients **from extreme → actual input** per time interval, producing **time-specific attributions** that focus on clinically/semantically critical regions. :contentReference[oaicite:3]{index=3}
         """
     )
-    st.latex(r"\mathrm{TEXGI}^{(j)}_l \;=\; \int_0^1 \frac{\partial f_{\theta_j}\big(x' + \alpha(x-x')\big)}{\partial x_l}\,(x_l - x'_l)\, d\alpha")
+    st.latex(r"\mathrm{TEXGISA}^{(j)}_l \;=\; \int_0^1 \frac{\partial f_{\theta_j}\big(x' + \alpha(x-x')\big)}{\partial x_l}\,(x_l - x'_l)\, d\alpha")
     st.caption("x' is an **extreme baseline** at interval j; the path integral emphasizes high-risk regions. :contentReference[oaicite:4]{index=4}")
 
     st.subheader("4) Loss: prediction + temporal smoothness + expert priors")
@@ -72,12 +72,12 @@ The training objective adds two regularizers to the negative log-likelihood (NLL
     st.markdown(
         """
 1. **Upload & map columns**: choose *duration* (time), *event* (0/1), and *features*.  
-2. **Preview FI (no priors)**: run a quick TEXGI preview to see top-k features; sanity-check directions.  
+2. **Preview FI (no priors)**: run a quick TEXGISA preview to see top-k features; sanity-check directions.
 3. **Set priors**: in *Expert Rules*, mark important features (and direction if applicable), adjust per-feature **weight**.  
 4. **Tune regularizers**:  
    - `λ_smooth` (temporal smoothness on attributions): typical `0.005–0.05`.  
    - `λ_expert` (overall strength of expert prior panel): start `0.05–0.2`.  
-5. **Advanced TEXGI / generator** (optional): adjust `τ` (tail probability), IG `steps (M)`, and extreme generator capacity (fast mode for speed).  
+5. **Advanced TEXGISA / generator** (optional): adjust `τ` (tail probability), IG `steps (M)`, and extreme generator capacity (fast mode for speed).
 6. **Train with priors**: monitor C-index; use KM plots (overall/groups) and predicted trajectories to validate risk stratification. :contentReference[oaicite:8]{index=8}
         """
     )
@@ -88,7 +88,7 @@ The training objective adds two regularizers to the negative log-likelihood (NLL
 - **Predicted survival trajectories**: spread & crossings hint at heterogeneity.  
 - **KM (overall)**: step-downs at events, flat tails often imply heavy censoring late.  
 - **KM (by risk group)**: vertical separation = better discrimination.  
-- **Feature Importance (TEXGI Top-k)**: bar length = importance; **color** encodes **direction**  
+- **Feature Importance (TEXGISA Top-k)**: bar length = importance; **color** encodes **direction**
   (**blue → positive hazard direction → higher risk**, **red → negative hazard direction → lower risk**), based on directional mean.  
   Cross-check with expert priors; misaligned features are candidates for stronger priors or data QA. :contentReference[oaicite:9]{index=9}
         """
@@ -100,12 +100,12 @@ The training objective adds two regularizers to the negative log-likelihood (NLL
 - Start with modest intervals, then increase bins if trajectories look too coarse.  
 - If FI looks noisy across time, increase `λ_smooth`.  
 - If domain-critical features are undervalued, increase `λ_expert` and/or their row weight in the Expert Rules table.  
-- For preview speed, enable *fast expert mode*; for final training, use full generator & larger `M` for TEXGI. :contentReference[oaicite:10]{index=10}
+- For preview speed, enable *fast expert mode*; for final training, use full generator & larger `M` for TEXGISA. :contentReference[oaicite:10]{index=10}
         """
     )
 
     st.info(
-        "References: The full method (discrete-time survival, TEXGI, temporal smoothness prior, and expert-"
+        "References: The full method (discrete-time survival, TEXGISA, temporal smoothness prior, and expert-"
         "informed regularization) comes from the provided manuscript. See details and equations inside. "
         ":contentReference[oaicite:11]{index=11}"
     )
@@ -322,21 +322,21 @@ def show():
                 tabs = st.tabs([
                     "💡 Overview & How-To",
                     "🧮 Mathematics & Losses",
-                    "🔬 Explanations (TEXGI)",
+                    "🔬 Explanations (TEXGISA)",
                     "🧑‍🏫 Expert Priors",
                     "❓ FAQ"
                 ])
 
                 with tabs[0]:
                     st.subheader("Overview")
-                    st.markdown("TEXGISA is a discrete-time survival model that integrates a unique explainability component (TEXGI) and allows for the encoding of domain knowledge as soft constraints during training, improving both performance and trust.")
+                    st.markdown("TEXGISA is a discrete-time survival model that integrates a unique explainability component (TEXGISA) and allows for the encoding of domain knowledge as soft constraints during training, improving both performance and trust.")
                     
                     st.subheader("How-To Guide")
                     st.markdown("""
                     1.  **Data Preparation**: Format data with columns for time-to-event, event status, and covariates. Discretize the time axis into intervals.
                     2.  **Define Expert Priors**: In the 'Expert Priors' tab, specify features known to be important and assign weights to guide the model's attention.
                     3.  **Train Model**: Run the training script. The loss function will include terms for prediction accuracy, smoothness, and adherence to expert priors.
-                    4.  **Generate Explanations**: Use the TEXGI module post-training to compute feature importance scores for individual predictions across time intervals.
+                    4.  **Generate Explanations**: Use the TEXGISA module post-training to compute feature importance scores for individual predictions across time intervals.
                     5.  **Interpret Results**: Analyze the model's C-index, loss curves, and the time-aware feature importance plots to gain clinical insights.
                     """)
 
@@ -358,10 +358,10 @@ def show():
                     """)
 
                 with tabs[2]:
-                    st.subheader("TEXGI in Practice")
+                    st.subheader("TEXGISA in Practice")
                     st.markdown(
                         """
-                        TEXGI (Time-aware Explainable Gradient-based Inference) is a form of integrated gradients adapted for this model.
+                        TEXGISA (Time-aware Explainable Gradient-based Inference for Survival Analysis) is a form of integrated gradients adapted for this model.
                         - **Use extreme baselines** (e.g., all-zero or mean vectors) or tail sampling for more salient, time-specific explanations. A good baseline is crucial for meaningful attribution.
                         - **Increase IG steps `M`** for smoother, more accurate attributions, but be aware that this increases computation time.
                         - A **fast preview mode** (with fewer steps) is available to quickly check attribution trends before committing to a full, high-resolution run.
