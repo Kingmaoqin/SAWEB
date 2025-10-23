@@ -23,66 +23,72 @@ _TOOLTIP_STYLE = """
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 1.25rem;
-    height: 1.25rem;
-    border-radius: 999px;
-    border: 1px solid #d0d5dd;
-    background: #f8fafc;
-    color: #475467;
-    font-weight: 600;
-    font-size: 0.75rem;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    border: 1px solid #7b8794;
+    color: #7b8794;
+    font-weight: 700;
+    font-size: 0.72rem;
     margin-left: 0.35rem;
     cursor: help;
-    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.25);
-    line-height: 1;
-    user-select: none;
+    background: #ffffff10;
 }
 
-.help-tooltip:hover,
+.help-tooltip:focus {
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.45);
+}
+
 .help-tooltip:focus-visible {
-    border-color: #98a2b3;
-    color: #344054;
+    outline: none;
 }
 
-.help-tooltip__content {
+.help-tooltip::after,
+.help-tooltip::before {
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.18s ease-in-out;
+}
+
+.help-tooltip:hover::after,
+.help-tooltip:focus::after,
+.help-tooltip:hover::before,
+.help-tooltip:focus::before {
+    opacity: 1;
+}
+
+.help-tooltip::after {
+    content: attr(data-tip);
     position: absolute;
-    bottom: calc(100% + 8px);
-    right: 0;
     min-width: 200px;
     max-width: 320px;
     background: #1f2933;
     color: #f5f7fa;
-    padding: 0.55rem 0.75rem;
+    padding: 0.6rem 0.75rem;
     border-radius: 0.5rem;
-    box-shadow: 0 12px 28px rgba(15, 23, 42, 0.18);
-    line-height: 1.45;
-    font-size: 0.82rem;
-    visibility: hidden;
-    opacity: 0;
-    transform: translateY(4px);
-    transition: opacity 0.18s ease, transform 0.18s ease;
-    z-index: 1000;
+    box-shadow: 0 10px 25px rgba(15, 23, 42, 0.22);
+    top: 125%;
+    right: 0;
     white-space: pre-wrap;
+    line-height: 1.4;
+    z-index: 9999;
 }
 
-.help-tooltip__content::before {
+.help-tooltip::before {
     content: "";
     position: absolute;
-    bottom: -6px;
-    right: 12px;
-    border-width: 6px 6px 0 6px;
-    border-style: solid;
-    border-color: #1f2933 transparent transparent transparent;
+    top: 108%;
+    right: 8px;
+    border-left: 7px solid transparent;
+    border-right: 7px solid transparent;
+    border-bottom: 7px solid #1f2933;
 }
 
-.help-tooltip:hover .help-tooltip__content,
-.help-tooltip:focus-visible .help-tooltip__content {
-    visibility: visible;
-    opacity: 1;
-    transform: translateY(0);
+[data-testid="column"] > div {
+    overflow: visible !important;
 }
 
-[data-testid="column"] > div,
 .stColumn {
     overflow: visible !important;
 }
@@ -91,7 +97,7 @@ _TOOLTIP_STYLE = """
 
 
 def _render_help_tooltip(help_text: str, key: str) -> None:
-    """Render a reusable hover tooltip styled to match Streamlit's native help icon."""
+    """Render a reusable ❔ tooltip with consistent styling."""
 
     if not help_text:
         return None
@@ -103,10 +109,7 @@ def _render_help_tooltip(help_text: str, key: str) -> None:
 
     safe_tip = escape(help_text).replace("\n", "<br/>")
     st.markdown(
-        "<span class=\"help-tooltip\" role=\"button\" aria-label=\"Show help\" tabindex=\"0\" id=\"{id}\">?"
-        "<span class=\"help-tooltip__content\">{content}</span></span>".format(
-            id=escape(key), content=safe_tip
-        ),
+        f"<span class='help-tooltip' data-tip='{safe_tip}' tabindex='0' id='{escape(key)}'>❔</span>",
         unsafe_allow_html=True,
     )
     return None
@@ -280,7 +283,7 @@ def field_with_help(control_fn, label, help_key: str, *args, **kwargs):
     """
     help_msg = _qhelp_md(help_key)
 
-    c1, c2 = st.columns([0.93, 0.07])
+    c1, c2 = st.columns([0.94, 0.06])
     with c1:
         value = control_fn(label, *args, **kwargs)
     with c2:
