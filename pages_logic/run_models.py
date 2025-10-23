@@ -85,6 +85,15 @@ _TOOLTIP_STYLE = """
     border-bottom: 7px solid #1f2933;
 }
 
+.help-label-row {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    margin-bottom: 0.25rem;
+    font-weight: 600;
+    font-size: 0.88rem;
+}
+
 [data-testid="column"] > div {
     overflow: visible !important;
 }
@@ -96,23 +105,44 @@ _TOOLTIP_STYLE = """
 """
 
 
-def _render_help_tooltip(help_text: str, key: str) -> None:
-    """Render a reusable ❔ tooltip with consistent styling."""
-
-    if not help_text:
-        return None
-
+def _ensure_tooltip_css() -> None:
     flag_key = "_help_tooltip_css"
     if not st.session_state.get(flag_key):
         st.markdown(_TOOLTIP_STYLE, unsafe_allow_html=True)
         st.session_state[flag_key] = True
 
+
+def _tooltip_badge(help_text: str, key: str) -> str:
+    if not help_text:
+        return ""
+
+    _ensure_tooltip_css()
+
     safe_tip = escape(help_text).replace("\n", "<br/>")
-    st.markdown(
-        f"<span class='help-tooltip' data-tip='{safe_tip}' tabindex='0' id='{escape(key)}'>❔</span>",
-        unsafe_allow_html=True,
+    return (
+        f"<span class='help-tooltip' data-tip='{safe_tip}' tabindex='0' id='{escape(key)}'>❔</span>"
     )
-    return None
+
+
+def _render_help_tooltip(help_text: str, key: str) -> None:
+    """Render a reusable ❔ tooltip with consistent styling."""
+
+    badge = _tooltip_badge(help_text, key)
+    if badge:
+        st.markdown(badge, unsafe_allow_html=True)
+
+
+def _render_label_with_help(label: str, help_text: str, key: str) -> None:
+    badge = _tooltip_badge(help_text, key)
+    _ensure_tooltip_css()
+    label_html = escape(label)
+    html = f"<div class='help-label-row'><span>{label_html}</span>"
+    if badge:
+        html += badge
+    html += "</div>"
+    st.markdown(html, unsafe_allow_html=True)
+
+
 def _md_explain(text: str, size: str = "1.12rem", line_height: float = 1.6):
     """Render explanatory text using a larger font size for readability."""
     st.markdown(
@@ -277,31 +307,25 @@ def _qhelp_md(key: str) -> str:
 
 
 def field_with_help(control_fn, label, help_key: str, *args, **kwargs):
-    """
-    始终在控件右侧显示统一风格的 ❔ 提示，保持界面一致性。
-    用法不变：epochs = field_with_help(st.number_input, "Epochs", "epochs", 10, 2000, 150, step=10)
-    """
-    help_msg = _qhelp_md(help_key)
+    """Attach consistent help text to Streamlit form controls using a shared tooltip."""
 
-    c1, c2 = st.columns([0.94, 0.06])
-    with c1:
-        value = control_fn(label, *args, **kwargs)
-    with c2:
-        _render_help_tooltip(help_msg, f"help_{help_key}")
-    return value
+    help_msg = _qhelp_md(help_key)
+    tooltip_id = kwargs.get("key", help_key)
+    _render_label_with_help(label, help_msg, f"help_{tooltip_id}")
+
+    if "label_visibility" not in kwargs:
+        kwargs["label_visibility"] = "collapsed"
+
+    return control_fn(label, *args, **kwargs)
 
 
 def uploader_with_help(label: str, *, key: str, help_text: str, **kwargs):
     """Streamlit ``file_uploader`` with a built-in help tooltip."""
-    return st.file_uploader(label, key=key, help=help_text, **kwargs)
 
-
-def _preview_dataframe(df: Optional[pd.DataFrame], *, max_rows: int = 10) -> None:
-    """Display up to ``max_rows`` rows with consistent styling (handles wide tables gracefully)."""
-    if df is None:
-        return
-    rows = min(len(df), max_rows)
-    st.dataframe(df.head(rows), use_container_width=True)
+    _render_label_with_help(label, help_text, f"help_{key}")
+    if "label_visibility" not in kwargs:
+        kwargs["label_visibility"] = "collapsed"
+    return st.file_uploader(label, key=key, **kwargs)
 
 
 def _preview_dataframe(df: Optional[pd.DataFrame], *, max_rows: int = 10) -> None:
