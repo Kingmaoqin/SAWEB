@@ -277,18 +277,10 @@ def _qhelp_md(key: str) -> str:
 
 
 def field_with_help(control_fn, label, help_key: str, *args, **kwargs):
-    """
-    始终在控件右侧显示统一风格的 ❔ 提示，保持界面一致性。
-    用法不变：epochs = field_with_help(st.number_input, "Epochs", "epochs", 10, 2000, 150, step=10)
-    """
+    """Use Streamlit's built-in help= to match uploader style."""
     help_msg = _qhelp_md(help_key)
+    return control_fn(label, *args, help=help_msg, **kwargs)
 
-    c1, c2 = st.columns([0.94, 0.06])
-    with c1:
-        value = control_fn(label, *args, **kwargs)
-    with c2:
-        _render_help_tooltip(help_msg, f"help_{help_key}")
-    return value
 
 
 def uploader_with_help(label: str, *, key: str, help_text: str, **kwargs):
@@ -1870,11 +1862,8 @@ def show():
 
 
     # ===================== 3) Algorithm & hyperparameters =====================
-    algo_header_cols = st.columns([0.94, 0.06])
-    with algo_header_cols[0]:
-        st.subheader("⚙️ Algorithm & Training Configuration")
-    with algo_header_cols[1]:
-        _render_help_tooltip(_qhelp_md("algo_panel"), "help_algo_panel")
+    st.subheader("⚙️ Algorithm & Training Configuration")
+    st.caption(_qhelp_md("algo_panel"))
     algo = field_with_help(
         st.selectbox, "Algorithm", "algo",
         ["CoxTime", "DeepSurv", "DeepHit", "TEXGISA"]
@@ -1909,11 +1898,8 @@ def show():
 
     # ===================== 4) TEXGISA regularizers & expert rules ================
     if algo == "TEXGISA":
-        reg_cols = st.columns([0.94, 0.06])
-        with reg_cols[0]:
-            st.markdown("### Regularizers")
-        with reg_cols[1]:
-            _render_help_tooltip(_qhelp_md("texgisa_regularizers"), "help_texgisa_regularizers")
+        st.markdown("### Regularizers")
+        st.caption(_qhelp_md("texgisa_regularizers"))
         r1, r2 = st.columns(2)
         with r1:
             lambda_smooth = field_with_help(
@@ -1926,12 +1912,8 @@ def show():
                 0.0, 10.0, 0.10, step=0.05, format="%.2f"
             )
 
-        guidance_cols = st.columns([0.94, 0.06])
-        with guidance_cols[0]:
-            st.markdown("### Expert Guidance")
-        with guidance_cols[1]:
-            _render_help_tooltip(_qhelp_md("texgisa_guidance"), "help_texgisa_guidance")
-
+        st.markdown("### Expert Guidance")
+        st.caption(_qhelp_md("texgisa_guidance"))
         # Important set I selector
         prev_imp = st.session_state.get("important_features", [])
         default_imp = [f for f in prev_imp if f in features]
@@ -1948,11 +1930,8 @@ def show():
             "Features in set I are protected by the expert penalty; other features are softly suppressed unless justified by TEXGISA."
         )
 
-        cols_con = st.columns([0.94, 0.06])
-        with cols_con[0]:
-            st.markdown("#### Directional / magnitude constraints (optional)")
-        with cols_con[1]:
-            _render_help_tooltip(_qhelp_md("texgisa_constraints"), "help_texgisa_constraints")
+        st.markdown("#### Directional / magnitude constraints (optional)")
+        st.caption(_qhelp_md("texgisa_constraints"))
         st.caption(
             "The current release only supports encouraging minimum magnitude per feature. "
         )
@@ -1982,12 +1961,9 @@ def show():
         expert_rules = _build_expert_rules_from_editor(edited, important_features)
 
         # Advanced TEXGISA/Generator controls
-        expander_cols = st.columns([0.94, 0.06])
-        with expander_cols[0]:
-            advanced_box = st.expander("Advanced TEXGISA / Generator settings", expanded=False)
-        with expander_cols[1]:
-            _render_help_tooltip(_qhelp_md("texgisa_advanced"), "help_texgisa_advanced")
+        advanced_box = st.expander("Advanced TEXGISA / Generator settings", expanded=False)
         with advanced_box:
+            st.caption(_qhelp_md("texgisa_advanced"))
             ig_steps = field_with_help(
                 st.number_input, "IG steps (M)", "ig_steps",
                 5, 200, 20
@@ -2024,6 +2000,7 @@ def show():
                 st.number_input, "Time-bins per batch for TEXGISA (T')", "ig_time_subsample",
                 1, 200, 8
             )
+
 
 
         # Attach to config
