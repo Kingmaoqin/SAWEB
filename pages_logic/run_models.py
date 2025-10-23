@@ -1929,8 +1929,7 @@ def show():
         with cols_con[1]:
             _render_help_tooltip(_qhelp_md("texgi_constraints"), "help_texgi_constraints")
         st.caption(
-            "The current MySA release only supports encouraging minimum TEXGI magnitude per feature. "
-            "Directional/sign constraints are not yet available."
+            "The current release only supports encouraging minimum magnitude per feature. "
         )
 
         # Seed table with a few editable rows prioritising expert-marked features
