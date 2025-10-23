@@ -16,7 +16,7 @@ from sa_tools import get_data_summary, run_survival_analysis
 
 ALGORITHM_GUIDE: Dict[str, Dict[str, str]] = {
     "TEXGISA": {
-        "summary": "Multimodal survival analysis with TEXGI explanations and optional expert priors.",
+        "summary": "Multimodal survival analysis with TEXGISA explanations and optional expert priors.",
         "best_for": "multimodal data, expert priors, attribution reporting",
     },
     "CoxTime": {

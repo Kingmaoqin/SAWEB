@@ -1,9 +1,9 @@
 
 # run_models.py — MySA-integrated Workbench (drop-in replacement)
-# This page supports: CoxTime, DeepSurv, DeepHit, and MySA (TEXGI).
+# This page supports: CoxTime, DeepSurv, DeepHit, and MySA (TEXGISA).
 # - Adds two loss-weight sliders (lambda_smooth, lambda_expert)
 # - Adds an editable Expert Rules table (relation/sign/min_mag/weight) and an "Important set" selector
-# - Shows TEXGI Feature Importance (Top-K + expand to all), and allows downloading time-dependent attributions.
+# - Shows TEXGISA Feature Importance (Top-K + expand to all), and allows downloading time-dependent attributions.
 
 import streamlit as st
 import matplotlib.pyplot as plt
@@ -23,72 +23,66 @@ _TOOLTIP_STYLE = """
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 18px;
-    height: 18px;
-    border-radius: 50%;
-    border: 1px solid #7b8794;
-    color: #7b8794;
-    font-weight: 700;
-    font-size: 0.72rem;
+    width: 1.25rem;
+    height: 1.25rem;
+    border-radius: 999px;
+    border: 1px solid #d0d5dd;
+    background: #f8fafc;
+    color: #475467;
+    font-weight: 600;
+    font-size: 0.75rem;
     margin-left: 0.35rem;
     cursor: help;
-    background: #ffffff10;
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.25);
+    line-height: 1;
+    user-select: none;
 }
 
-.help-tooltip:focus {
-    outline: none;
-    box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.45);
-}
-
+.help-tooltip:hover,
 .help-tooltip:focus-visible {
-    outline: none;
+    border-color: #98a2b3;
+    color: #344054;
 }
 
-.help-tooltip::after,
-.help-tooltip::before {
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity 0.18s ease-in-out;
-}
-
-.help-tooltip:hover::after,
-.help-tooltip:focus::after,
-.help-tooltip:hover::before,
-.help-tooltip:focus::before {
-    opacity: 1;
-}
-
-.help-tooltip::after {
-    content: attr(data-tip);
+.help-tooltip__content {
     position: absolute;
+    bottom: calc(100% + 8px);
+    right: 0;
     min-width: 200px;
     max-width: 320px;
     background: #1f2933;
     color: #f5f7fa;
-    padding: 0.6rem 0.75rem;
+    padding: 0.55rem 0.75rem;
     border-radius: 0.5rem;
-    box-shadow: 0 10px 25px rgba(15, 23, 42, 0.22);
-    top: 125%;
-    right: 0;
+    box-shadow: 0 12px 28px rgba(15, 23, 42, 0.18);
+    line-height: 1.45;
+    font-size: 0.82rem;
+    visibility: hidden;
+    opacity: 0;
+    transform: translateY(4px);
+    transition: opacity 0.18s ease, transform 0.18s ease;
+    z-index: 1000;
     white-space: pre-wrap;
-    line-height: 1.4;
-    z-index: 9999;
 }
 
-.help-tooltip::before {
+.help-tooltip__content::before {
     content: "";
     position: absolute;
-    top: 108%;
-    right: 8px;
-    border-left: 7px solid transparent;
-    border-right: 7px solid transparent;
-    border-bottom: 7px solid #1f2933;
+    bottom: -6px;
+    right: 12px;
+    border-width: 6px 6px 0 6px;
+    border-style: solid;
+    border-color: #1f2933 transparent transparent transparent;
 }
 
-[data-testid="column"] > div {
-    overflow: visible !important;
+.help-tooltip:hover .help-tooltip__content,
+.help-tooltip:focus-visible .help-tooltip__content {
+    visibility: visible;
+    opacity: 1;
+    transform: translateY(0);
 }
 
+[data-testid="column"] > div,
 .stColumn {
     overflow: visible !important;
 }
@@ -97,12 +91,24 @@ _TOOLTIP_STYLE = """
 
 
 def _render_help_tooltip(help_text: str, key: str) -> None:
-    """Legacy no-op retained for cached sessions that still reference the old tooltip helper."""
+    """Render a reusable hover tooltip styled to match Streamlit's native help icon."""
 
-    # Streamlit's native ``help=`` argument on each widget now renders the tooltip, so no
-    # additional markup is required here. The function remains to avoid NameError crashes in
-    # long-lived Streamlit processes that may call the previous implementation during reruns.
-    _ = (help_text, key)
+    if not help_text:
+        return None
+
+    flag_key = "_help_tooltip_css"
+    if not st.session_state.get(flag_key):
+        st.markdown(_TOOLTIP_STYLE, unsafe_allow_html=True)
+        st.session_state[flag_key] = True
+
+    safe_tip = escape(help_text).replace("\n", "<br/>")
+    st.markdown(
+        "<span class=\"help-tooltip\" role=\"button\" aria-label=\"Show help\" tabindex=\"0\" id=\"{id}\">?"
+        "<span class=\"help-tooltip__content\">{content}</span></span>".format(
+            id=escape(key), content=safe_tip
+        ),
+        unsafe_allow_html=True,
+    )
     return None
 def _md_explain(text: str, size: str = "1.12rem", line_height: float = 1.6):
     """Render explanatory text using a larger font size for readability."""
@@ -182,7 +188,7 @@ def _explain_plot(kind: str, **kwargs) -> str:
         if df is None or not isinstance(df, pd.DataFrame) or df.empty:
             return (
                 "This bar chart ranks features by TEXGISA feature importance "
-                "(Time-dependent EXtreme Gradient Integration, TEXGI). Larger bars indicate stronger contributions to the predicted risk over time."
+                "(Time-dependent EXtreme Gradient Integration, TEXGISA). Larger bars indicate stronger contributions to the predicted risk over time."
             )
 
         k = int(len(df))
@@ -198,7 +204,7 @@ def _explain_plot(kind: str, **kwargs) -> str:
             neg = int((s < 0).sum())
 
         msg = (
-            f"This bar chart displays the top-{k} features ranked by TEXGISA feature importance (TEXGI). "
+            f"This bar chart displays the top-{k} features ranked by TEXGISA feature importance (TEXGISA). "
             f"The most influential feature is {top_feat} (importance {top_imp:.4f}). "
             f"On average, the importance across the shown features is {avg_imp:.4f}. "
         )
@@ -233,7 +239,7 @@ def _qhelp_md(key: str) -> str:
         "positive_label": "Event-column label that should be mapped to 1. All other values are mapped to 0 for censored observations.",
 
         # Algorithm Selection & Common Training Parameters
-        "algo": "Select the training algorithm. TEXGISA is the only option that supports end-to-end multimodal training on tabular data plus raw images or sensors while generating TEXGI explanations.",
+        "algo": "Select the training algorithm. TEXGISA is the only option that supports end-to-end multimodal training on tabular data plus raw images or sensors while generating TEXGISA explanations.",
         "batch_size": "Number of samples processed per optimisation step. Larger batch sizes yield smoother gradients but increase GPU memory usage.",
         "epochs": "Total number of training epochs. Begin with 50–150 epochs to monitor convergence before scheduling longer runs.",
         "lr": "Learning rate for the optimiser. High values may diverge, whereas low values slow convergence. A starting range between 1e-3 and 1e-2 works well for most runs.",
@@ -244,21 +250,25 @@ def _qhelp_md(key: str) -> str:
 
         # MySA Regularisation & Priors
         "lambda_expert": "Weight applied to the expert prior penalty (λ_expert). Higher values enforce the curated important feature set more strongly but may reduce predictive accuracy.",
-        "lambda_smooth": "Temporal smoothness weight (λ_smooth). Encourages TEXGI importance to vary smoothly over time but can hide sharp dynamics if set too high.",
+        "lambda_smooth": "Temporal smoothness weight (λ_smooth). Encourages TEXGISA importance to vary smoothly over time but can hide sharp dynamics if set too high.",
         "important_features": "Expert-defined important feature set that λ_expert should emphasise during training.",
-        "fast_mode": "Toggle for acceleration mode that uses an approximate TEXGI pipeline for quick previews. Disable it for production-quality training.",
-        "ig_steps": "Number of integration steps used when computing TEXGI. Increasing the value improves accuracy at the cost of additional runtime.",
-        "texgi_constraints": "Editor for TEXGI magnitude floors. Each row specifies a minimum TEXGI importance enforced when λ_expert is greater than zero. Directional limits are not available yet.",
+        "fast_mode": "Toggle for acceleration mode that uses an approximate TEXGISA pipeline for quick previews. Disable it for production-quality training.",
+        "ig_steps": "Number of integration steps used when computing TEXGISA. Increasing the value improves accuracy at the cost of additional runtime.",
+        "texgisa_constraints": "Editor for TEXGISA magnitude floors. Each row specifies a minimum TEXGISA importance enforced when λ_expert is greater than zero. Directional limits are not available yet.",
+        "algo_panel": "Overview of algorithm-level controls shared across CoxTime, DeepSurv, DeepHit, and TEXGISA. Adjust these first before diving into model-specific priors.",
+        "texgisa_regularizers": "TEXGISA introduces temporal smoothness (λ_smooth) and expert prior (λ_expert) penalties. Tune them here to balance interpretability, stability, and predictive performance.",
+        "texgisa_guidance": "Configure expert-driven guidance for TEXGISA: highlight must-keep features and enforce minimum importance thresholds or penalties to align with domain knowledge.",
+        "texgisa_advanced": "Fine-tune the TEXGISA generator and attribution pipeline. These knobs control integration steps, latent dimensions, and sampling budgets that affect explanation fidelity and runtime.",
 
-        # Generator / TEXGI Advanced Parameters
+        # Generator / TEXGISA Advanced Parameters
         "latent_dim": "Dimension of the generator latent noise vector. Larger dimensions capture more variation but usually require more data.",
         "extreme_dim": "Dimension of the extreme encoding vector that models high-risk trajectories.",
-        "gen_epochs": "Number of generator training epochs (used only when TEXGI is enabled).",
+        "gen_epochs": "Number of generator training epochs (used only when TEXGISA is enabled).",
         "gen_batch": "Batch size used while training the generator.",
         "gen_lr": "Learning rate for the generator optimiser.",
         "gen_alpha_dist": "Distribution-distance regularisation weight α. Higher values keep generated samples close to the reference distribution.",
-        "ig_batch_samples": "Number of samples B' drawn per TEXGI batch. Use higher values for smoother gradients if runtime allows.",
-        "ig_time_subsample": "Number of time steps T' sampled per TEXGI pass to control integration speed.",
+        "ig_batch_samples": "Number of samples B' drawn per TEXGISA batch. Use higher values for smoother gradients if runtime allows.",
+        "ig_time_subsample": "Number of time steps T' sampled per TEXGISA pass to control integration speed.",
     }
     return HELP.get(key, "No description available (add a description for this key in _qhelp_md).")
 
@@ -270,7 +280,7 @@ def field_with_help(control_fn, label, help_key: str, *args, **kwargs):
     """
     help_msg = _qhelp_md(help_key)
 
-    c1, c2 = st.columns([0.94, 0.06])
+    c1, c2 = st.columns([0.93, 0.07])
     with c1:
         value = control_fn(label, *args, **kwargs)
     with c2:
@@ -471,7 +481,7 @@ def _extract_fi_df(results: dict) -> pd.DataFrame | None:
 
 
 def _render_fi_plot(fi_df: pd.DataFrame, topn: int = 10):
-    """Plot TEXGI Top-k as a horizontal bar chart (k<=10)."""
+    """Plot TEXGISA Top-k as a horizontal bar chart (k<=10)."""
     if fi_df is None or fi_df.empty:
         st.info("No feature importance available.")
         return
@@ -501,7 +511,7 @@ def _render_fi_plot(fi_df: pd.DataFrame, topn: int = 10):
     ax.barh(y_labels, x_vals, color=colors)
     ax.set_xlabel("Importance")
     ax.set_ylabel("")
-    ax.set_title(f"TEXGISA Top-{k} Features (TEXGI)")
+    ax.set_title(f"TEXGISA Top-{k} Features (TEXGISA)")
     ax.grid(axis="x", alpha=0.2)
     st.pyplot(fig)
     # Textual explanation for FI Top-k
@@ -1857,7 +1867,11 @@ def show():
 
 
     # ===================== 3) Algorithm & hyperparameters =====================
-    st.subheader("⚙️ Algorithm & Training Configuration")
+    algo_header_cols = st.columns([0.94, 0.06])
+    with algo_header_cols[0]:
+        st.subheader("⚙️ Algorithm & Training Configuration")
+    with algo_header_cols[1]:
+        _render_help_tooltip(_qhelp_md("algo_panel"), "help_algo_panel")
     algo = field_with_help(
         st.selectbox, "Algorithm", "algo",
         ["CoxTime", "DeepSurv", "DeepHit", "TEXGISA"]
@@ -1892,7 +1906,11 @@ def show():
 
     # ===================== 4) TEXGISA regularizers & expert rules ================
     if algo == "TEXGISA":
-        st.markdown("### Regularizers")
+        reg_cols = st.columns([0.94, 0.06])
+        with reg_cols[0]:
+            st.markdown("### Regularizers")
+        with reg_cols[1]:
+            _render_help_tooltip(_qhelp_md("texgisa_regularizers"), "help_texgisa_regularizers")
         r1, r2 = st.columns(2)
         with r1:
             lambda_smooth = field_with_help(
@@ -1905,7 +1923,11 @@ def show():
                 0.0, 10.0, 0.10, step=0.05, format="%.2f"
             )
 
-        st.markdown("### Expert Guidance")
+        guidance_cols = st.columns([0.94, 0.06])
+        with guidance_cols[0]:
+            st.markdown("### Expert Guidance")
+        with guidance_cols[1]:
+            _render_help_tooltip(_qhelp_md("texgisa_guidance"), "help_texgisa_guidance")
 
         # Important set I selector
         prev_imp = st.session_state.get("important_features", [])
@@ -1920,14 +1942,14 @@ def show():
         st.session_state["important_features"] = important_features
 
         st.caption(
-            "Features in set I are protected by the expert penalty; other features are softly suppressed unless justified by TEXGI."
+            "Features in set I are protected by the expert penalty; other features are softly suppressed unless justified by TEXGISA."
         )
 
         cols_con = st.columns([0.94, 0.06])
         with cols_con[0]:
             st.markdown("#### Directional / magnitude constraints (optional)")
         with cols_con[1]:
-            _render_help_tooltip(_qhelp_md("texgi_constraints"), "help_texgi_constraints")
+            _render_help_tooltip(_qhelp_md("texgisa_constraints"), "help_texgisa_constraints")
         st.caption(
             "The current release only supports encouraging minimum magnitude per feature. "
         )
@@ -1948,7 +1970,7 @@ def show():
             seed,
             column_config={
                 "feature": st.column_config.SelectboxColumn("feature", options=features, help="Choose a feature"),
-                "importance_floor": st.column_config.NumberColumn("minimum TEXGI magnitude", step=0.01, format="%.3f"),
+                "importance_floor": st.column_config.NumberColumn("minimum TEXGISA magnitude", step=0.01, format="%.3f"),
                 "weight": st.column_config.NumberColumn("penalty weight", step=0.1, format="%.2f"),
             },
             num_rows="dynamic",
@@ -1956,8 +1978,13 @@ def show():
         )
         expert_rules = _build_expert_rules_from_editor(edited, important_features)
 
-        # Advanced TEXGI/Generator controls
-        with st.expander("Advanced TEXGI / Generator settings", expanded=False):
+        # Advanced TEXGISA/Generator controls
+        expander_cols = st.columns([0.94, 0.06])
+        with expander_cols[0]:
+            advanced_box = st.expander("Advanced TEXGISA / Generator settings", expanded=False)
+        with expander_cols[1]:
+            _render_help_tooltip(_qhelp_md("texgisa_advanced"), "help_texgisa_advanced")
+        with advanced_box:
             ig_steps = field_with_help(
                 st.number_input, "IG steps (M)", "ig_steps",
                 5, 200, 20
@@ -1991,7 +2018,7 @@ def show():
                 4, 512, 32
             )
             ig_time_subsample = field_with_help(
-                st.number_input, "Time-bins per batch for TEXGI (T')", "ig_time_subsample",
+                st.number_input, "Time-bins per batch for TEXGISA (T')", "ig_time_subsample",
                 1, 200, 8
             )
 
@@ -2025,7 +2052,7 @@ def show():
         if algo == "TEXGISA":
             config["multimodal_sources"] = mm_sources
             st.success(
-                "✅ Raw multimodal inputs detected. TEXGISA will optimise all modalities end-to-end with TEXGI."
+                "✅ Raw multimodal inputs detected. TEXGISA will optimise all modalities end-to-end with TEXGISA."
             )
         else:
             st.warning(
@@ -2045,7 +2072,7 @@ def show():
             preview_clicked = st.button(
                 "👀 Preview FI (no expert priors)",
                 use_container_width=True,
-                help="Run a short TEXGISA pass (λ_expert=0) to preview TEXGISA feature importance (powered by TEXGI) before full training.",
+                help="Run a short TEXGISA pass (λ_expert=0) to preview TEXGISA feature importance (powered by TEXGISA) before full training.",
             )
         with c_run2:
             train_clicked = st.button(
@@ -2208,7 +2235,7 @@ def show():
             # Preserve any additional TEXGISA downloads (for example time-dependent tensors) if available.
             if "texgi_time_tensor_path" in results:
                 st.download_button(
-                    "📥 Download time-dependent TEXGISA (TEXGI, pt)",
+                    "📥 Download time-dependent TEXGISA (pt)",
                     data=open(results["texgi_time_tensor_path"], "rb").read(),
                     file_name="texgi_time_tensor.pt",
                     mime="application/octet-stream",
@@ -2219,7 +2246,7 @@ def show():
         if "Phi_Val_Path" in results:
             try:
                 with open(results["Phi_Val_Path"], "rb") as f:
-                    st.download_button("⬇️ Download time-dependent TEXGISA (TEXGI, pt)", f, file_name="mysa_phi_val.pt", type="secondary")
+                    st.download_button("⬇️ Download time-dependent TEXGISA (pt)", f, file_name="mysa_phi_val.pt", type="secondary")
             except Exception:
                 pass
 
