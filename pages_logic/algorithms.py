@@ -221,33 +221,47 @@ def show():
                 )
             )
 
+        # Ensure the button/slider stack has enough breathing room so labels never overlap the chart region.
         fig.update_layout(
-            title="Simulated Hazard & Survival Curves",
+            title=dict(text="Simulated Hazard & Survival Curves", x=0.5),
             xaxis_title="Time (months)",
             xaxis2_title="Time (months)",
             yaxis_title="h(t) - Hazard Rate",
             yaxis2_title="S(t) - Survival Probability",
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
+            height=520,
+            margin=dict(t=140, b=90, l=70, r=30),
+            legend=dict(orientation="h", yanchor="bottom", y=1.08, xanchor="center", x=0.5),
             updatemenus=[
                 dict(
                     type="buttons",
                     buttons=[
-                        dict(label="Play", method="animate", args=[[frame.name for frame in frames], {"frame": {"duration": 800, "redraw": True}, "fromcurrent": True}]),
-                        dict(label="Pause", method="animate", args=[[None], {"frame": {"duration": 0, "redraw": False}, "mode": "immediate", "transition": {"duration": 0}}]),
+                        dict(
+                            label="Play",
+                            method="animate",
+                            args=[[frame.name for frame in frames], {"frame": {"duration": 800, "redraw": True}, "fromcurrent": True}],
+                        ),
+                        dict(
+                            label="Pause",
+                            method="animate",
+                            args=[[None], {"frame": {"duration": 0, "redraw": False}, "mode": "immediate", "transition": {"duration": 0}}],
+                        ),
                     ],
                     direction="left",
                     pad={"r": 10, "t": 10},
                     showactive=False,
                     x=0.5,
                     xanchor="center",
-                    y=1.2,
+                    y=1.15,
                     yanchor="top",
                 )
             ],
             sliders=[
                 dict(
+                    pad={"t": 40},
                     active=max(0, preset_hazard_ratios.index(min(preset_hazard_ratios, key=lambda hr: abs(hr - hazard_ratio)))) if preset_hazard_ratios else 0,
                     currentvalue={"prefix": "Hazard Ratio: "},
+                    len=0.9,
+                    x=0.05,
                     steps=[
                         dict(
                             label=f"{hr:.2f}",
@@ -262,26 +276,35 @@ def show():
 
         fig.frames = frames
 
-        col_plot, col_explain = st.columns([3, 2])
+        col_plot, col_explain = st.columns([5, 3])
         with col_plot:
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+        # Compose a short narrative that adapts to the selected hazard ratio so readers immediately grasp the direction of change.
+        trend_description = (
+            "Compared with the baseline, the **hazard line drops** and the **survival curve flattens**, signalling slower risk accumulation."
+            if hazard_ratio < 1
+            else "Hazard matches the baseline, so the survival curve coincides with the dashed reference."
+            if np.isclose(hazard_ratio, 1.0)
+            else "Both the **hazard line rises** and the **survival curve steepens**, indicating faster event accrual."
+        )
 
         with col_explain:
             st.markdown(
                 f"""
                 **How to read the animation**
 
-                - The **baseline curves** (dashed blue) fix the reference hazard and survival when the hazard ratio equals 1.0.
-                - Increasing the hazard ratio (solid red) raises the hazard line, meaning the instantaneous event risk is higher.
-                - As hazard increases, the survival curve drops faster because the cumulative risk accumulates more quickly over time.
-                - Lower hazard ratios do the opposite: they flatten the hazard line and slow the decline in survival probability.
+                - The **baseline curves** (dashed blue) stay fixed at hazard ratio 1.0 to give a reference trajectory.
+                - Moving the hazard ratio slider or pressing **Play** animates the solid red curves against that baseline.
+                - Higher hazard ratios push the red hazard curve upward, so survival decays more quickly in time.
+                - Lower hazard ratios pull the hazard curve down, stretching the survival tail because events arrive more slowly.
 
-                Current selection → **Median Survival:** {median_survival} months, **Hazard Ratio:** {hazard_ratio:.2f}
+                Current selection → **Median Survival:** {median_survival} months, **Hazard Ratio:** {hazard_ratio:.2f}. {trend_description}
                 """
             )
 
             st.caption(
-                "Use the play button or the slider to sweep across preset hazard ratios and observe how the hazard shift directly translates into accelerated or decelerated survival decay."
+                "Tip: use the animation slider to jump to preset hazard ratios for quick comparisons, then fine-tune with the Streamlit slider to inspect intermediate behaviour."
             )
 
     # ====================== Algorithm Selection ======================
