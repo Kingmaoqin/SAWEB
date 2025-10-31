@@ -1,6 +1,15 @@
 import streamlit as st
 import numpy as np
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+
+
+def compute_exponential_hazard_survival(time_grid: np.ndarray, median: float, hr: float):
+    """Return hazard and survival values for an exponential survival model."""
+    rate = np.log(2) / median
+    hazard = np.full_like(time_grid, rate * hr)
+    survival = np.exp(-rate * hr * time_grid)
+    return hazard, survival
 
 def render_mysa_tutorial():
     st.header("TEXGISA — Algorithm Guide & How-To")
@@ -143,21 +152,137 @@ def show():
             hazard_ratio = st.slider("Hazard Ratio", 0.5, 2.0, 1.0)
         
         t = np.linspace(0, 60, 100)
-        # Using a Weibull survival function for simulation
-        # scale = median_survival / (np.log(2)**(1/1.5))
-        # survival = np.exp(-(t / scale)**1.5)
-        # A simpler exponential model for clarity
-        rate = np.log(2) / median_survival
-        survival_base = np.exp(-rate * t)
-        survival_hr = np.exp(-rate * hazard_ratio * t)
 
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=t, y=survival_base, name='Baseline Survival', line=dict(dash='dot')))
-        fig.add_trace(go.Scatter(x=t, y=survival_hr, name=f'Survival with HR={hazard_ratio}', line=dict(color='firebrick')))
-        fig.update_layout(title="Simulated Survival Curve",
-                          xaxis_title='Time (months)',
-                          yaxis_title='S(t) - Survival Probability')
-        st.plotly_chart(fig, use_container_width=True)
+        hazard_base, survival_base = compute_exponential_hazard_survival(t, median_survival, 1.0)
+        hazard_hr, survival_hr = compute_exponential_hazard_survival(t, median_survival, hazard_ratio)
+
+        fig = make_subplots(
+            rows=1,
+            cols=2,
+            subplot_titles=("Hazard vs. Time", "Survival vs. Time"),
+            shared_xaxes=True,
+        )
+
+        fig.add_trace(
+            go.Scatter(
+                x=t,
+                y=hazard_base,
+                name="Baseline Hazard",
+                line=dict(dash="dot", color="#1f77b4"),
+            ),
+            row=1,
+            col=1,
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=t,
+                y=hazard_hr,
+                name=f"Hazard (HR={hazard_ratio:.2f})",
+                line=dict(color="firebrick"),
+            ),
+            row=1,
+            col=1,
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=t,
+                y=survival_base,
+                name="Baseline Survival",
+                line=dict(dash="dot", color="#1f77b4"),
+            ),
+            row=1,
+            col=2,
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=t,
+                y=survival_hr,
+                name=f"Survival (HR={hazard_ratio:.2f})",
+                line=dict(color="firebrick"),
+            ),
+            row=1,
+            col=2,
+        )
+
+        preset_hazard_ratios = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
+        frames = []
+        for hr in preset_hazard_ratios:
+            hazard_dynamic, survival_dynamic = compute_exponential_hazard_survival(t, median_survival, hr)
+            frames.append(
+                go.Frame(
+                    name=f"HR={hr:.2f}",
+                    data=[
+                        go.Scatter(x=t, y=hazard_base),
+                        go.Scatter(x=t, y=hazard_dynamic, name=f"Hazard (HR={hr:.2f})"),
+                        go.Scatter(x=t, y=survival_base),
+                        go.Scatter(x=t, y=survival_dynamic, name=f"Survival (HR={hr:.2f})"),
+                    ],
+                    layout=go.Layout(title_text=f"Hazard & Survival (HR={hr:.2f})"),
+                )
+            )
+
+        fig.update_layout(
+            title="Simulated Hazard & Survival Curves",
+            xaxis_title="Time (months)",
+            xaxis2_title="Time (months)",
+            yaxis_title="h(t) - Hazard Rate",
+            yaxis2_title="S(t) - Survival Probability",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
+            updatemenus=[
+                dict(
+                    type="buttons",
+                    buttons=[
+                        dict(label="Play", method="animate", args=[[frame.name for frame in frames], {"frame": {"duration": 800, "redraw": True}, "fromcurrent": True}]),
+                        dict(label="Pause", method="animate", args=[[None], {"frame": {"duration": 0, "redraw": False}, "mode": "immediate", "transition": {"duration": 0}}]),
+                    ],
+                    direction="left",
+                    pad={"r": 10, "t": 10},
+                    showactive=False,
+                    x=0.5,
+                    xanchor="center",
+                    y=1.2,
+                    yanchor="top",
+                )
+            ],
+            sliders=[
+                dict(
+                    active=max(0, preset_hazard_ratios.index(min(preset_hazard_ratios, key=lambda hr: abs(hr - hazard_ratio)))) if preset_hazard_ratios else 0,
+                    currentvalue={"prefix": "Hazard Ratio: "},
+                    steps=[
+                        dict(
+                            label=f"{hr:.2f}",
+                            method="animate",
+                            args=[[f"HR={hr:.2f}"], {"frame": {"duration": 0, "redraw": True}, "mode": "immediate"}],
+                        )
+                        for hr in preset_hazard_ratios
+                    ],
+                )
+            ],
+        )
+
+        fig.frames = frames
+
+        col_plot, col_explain = st.columns([3, 2])
+        with col_plot:
+            st.plotly_chart(fig, use_container_width=True)
+
+        with col_explain:
+            st.markdown(
+                f"""
+                **How to read the animation**
+
+                - The **baseline curves** (dashed blue) fix the reference hazard and survival when the hazard ratio equals 1.0.
+                - Increasing the hazard ratio (solid red) raises the hazard line, meaning the instantaneous event risk is higher.
+                - As hazard increases, the survival curve drops faster because the cumulative risk accumulates more quickly over time.
+                - Lower hazard ratios do the opposite: they flatten the hazard line and slow the decline in survival probability.
+
+                Current selection → **Median Survival:** {median_survival} months, **Hazard Ratio:** {hazard_ratio:.2f}
+                """
+            )
+
+            st.caption(
+                "Use the play button or the slider to sweep across preset hazard ratios and observe how the hazard shift directly translates into accelerated or decelerated survival decay."
+            )
 
     # ====================== Algorithm Selection ======================
     st.markdown("---")
