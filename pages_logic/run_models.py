@@ -9,7 +9,13 @@ import streamlit as st
 import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
+import itertools
+import math
 from typing import Any, Dict, List, Optional, Sequence, Set
+
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+from plotly.colors import qualitative as pq
 
 from models import coxtime, deepsurv, deephit
 from models.mysa import run_mysa as run_texgisa
@@ -808,6 +814,276 @@ def _plot_survival_curves(surv_df: pd.DataFrame, max_lines: int = 5):
     except Exception:
         last_vals = []
     _md_explain(_explain_plot("surv_traj", cols=list(cols), last_vals=last_vals))
+
+
+def _render_training_curve_history(curve_data: Dict[str, Any]):
+    entries: List[Dict[str, Any]] = curve_data.get("entries") or []
+    if not entries:
+        return
+
+    time_bins = curve_data.get("time_bins")
+    if not time_bins and entries and entries[0].get("hazards"):
+        time_bins = list(range(1, len(entries[0]["hazards"][0]) + 1))
+    time_bins = time_bins or list(range(1, 2))
+
+    sample_ids: List[str] = curve_data.get("sample_ids") or []
+    if not sample_ids and entries and entries[0].get("hazards"):
+        sample_ids = [f"样本{i + 1}" for i in range(len(entries[0]["hazards"]))]
+    sample_meta = curve_data.get("sample_metadata") or [{} for _ in sample_ids]
+
+    def _format_epoch(option: int) -> str:
+        entry = entries[option]
+        val_c = entry.get("val_cindex")
+        if val_c is None or (isinstance(val_c, float) and math.isnan(val_c)):
+            return f"Epoch {entry.get('epoch', option + 1)}"
+        return f"Epoch {entry.get('epoch', option + 1)} (C-index={val_c:.3f})"
+
+    epoch_idx = st.select_slider(
+        "选择训练阶段",
+        options=list(range(len(entries))),
+        value=len(entries) - 1,
+        format_func=_format_epoch,
+        key="training_curve_epoch",
+    )
+
+    current_entry = entries[epoch_idx]
+    baseline_entry = entries[0]
+    prev_entry = entries[epoch_idx - 1] if epoch_idx > 0 else current_entry
+
+    def _ensure_2d(arr_like: Any) -> np.ndarray:
+        arr = np.asarray(arr_like, dtype=float)
+        if arr.size == 0:
+            return np.zeros((len(sample_ids), len(time_bins)), dtype=float)
+        if arr.ndim == 1:
+            arr = arr[None, :]
+        return arr[: len(sample_ids), : len(time_bins)]
+
+    hazard_current = _ensure_2d(current_entry.get("hazards", []))
+    survival_current = _ensure_2d(current_entry.get("survival", []))
+    n_samples = min(len(sample_ids), hazard_current.shape[0])
+    sample_ids = sample_ids[:n_samples]
+    sample_meta = sample_meta[:n_samples]
+    hazard_current = hazard_current[:n_samples]
+    survival_current = survival_current[:n_samples]
+
+    hazard_prev = _ensure_2d(prev_entry.get("hazards", hazard_current))[:n_samples]
+    survival_prev = _ensure_2d(prev_entry.get("survival", survival_current))[:n_samples]
+    hazard_base = _ensure_2d(baseline_entry.get("hazards", hazard_current))[:n_samples]
+    survival_base = _ensure_2d(baseline_entry.get("survival", survival_current))[:n_samples]
+
+    palette = list(pq.Set2) + list(pq.Plotly) + list(pq.D3)
+    color_cycle = itertools.cycle(palette)
+    colors = [next(color_cycle) for _ in range(max(n_samples, 1))]
+
+    fig = make_subplots(
+        rows=1,
+        cols=2,
+        subplot_titles=("Hazard vs Time", "Survival vs Time"),
+        shared_xaxes=True,
+    )
+
+    hazard_global_max = 0.0
+    for entry in entries:
+        hz = np.asarray(entry.get("hazards", []), dtype=float)
+        if hz.size:
+            hazard_global_max = max(hazard_global_max, float(np.nanmax(hz)))
+
+    for idx in range(n_samples):
+        label = sample_ids[idx]
+        color = colors[idx]
+        fig.add_trace(
+            go.Scatter(
+                x=time_bins,
+                y=hazard_current[idx],
+                name=f"{label} Hazard",
+                legendgroup=label,
+                line=dict(color=color, width=3),
+            ),
+            row=1,
+            col=1,
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=time_bins,
+                y=survival_current[idx],
+                name=f"{label} Survival",
+                legendgroup=label,
+                line=dict(color=color, dash="dash", width=3),
+                showlegend=False,
+            ),
+            row=1,
+            col=2,
+        )
+
+    frames = []
+    for entry in entries:
+        hz = _ensure_2d(entry.get("hazards", []))[:n_samples]
+        sv = _ensure_2d(entry.get("survival", []))[:n_samples]
+        frame_traces = []
+        for idx in range(n_samples):
+            frame_traces.append(
+                go.Scatter(x=time_bins, y=hz[idx])
+            )
+        for idx in range(n_samples):
+            frame_traces.append(
+                go.Scatter(x=time_bins, y=sv[idx])
+            )
+        frames.append(
+            go.Frame(
+                data=frame_traces,
+                name=str(entry.get("epoch", "")),
+            )
+        )
+
+    fig.frames = frames
+
+    slider_steps = [
+        {
+            "args": [[str(entry.get("epoch", ""))], {"frame": {"duration": 600, "redraw": False}, "mode": "immediate"}],
+            "label": f"Ep {entry.get('epoch', idx + 1)}",
+            "method": "animate",
+        }
+        for idx, entry in enumerate(entries)
+    ]
+
+    fig.update_layout(
+        height=520,
+        margin=dict(t=60, l=60, r=40, b=50),
+        hovermode="x unified",
+        template="plotly_white",
+        legend=dict(orientation="h", y=-0.18, x=0.0),
+        xaxis=dict(title="时间区间"),
+        xaxis2=dict(title="时间区间"),
+        yaxis=dict(title="瞬时风险率", range=[0, max(0.05, hazard_global_max * 1.1)]),
+        yaxis2=dict(title="生存概率", range=[0, 1.02]),
+        updatemenus=[
+            {
+                "type": "buttons",
+                "direction": "left",
+                "x": 0.0,
+                "y": 1.18,
+                "showactive": False,
+                "pad": {"r": 10, "t": 30},
+                "buttons": [
+                    {
+                        "label": "▶️ 播放",
+                        "method": "animate",
+                        "args": [None, {"frame": {"duration": 600, "redraw": False}, "fromcurrent": True}],
+                    },
+                    {
+                        "label": "⏸ 暂停",
+                        "method": "animate",
+                        "args": [[None], {"frame": {"duration": 0, "redraw": False}, "mode": "immediate"}],
+                    },
+                ],
+            }
+        ],
+        sliders=[
+            {
+                "active": epoch_idx,
+                "pad": {"t": 30},
+                "steps": slider_steps,
+                "currentvalue": {"prefix": "Epoch: "},
+            }
+        ],
+    )
+
+    if fig.layout.sliders:
+        fig.layout.sliders[0]["active"] = epoch_idx
+
+    col_plot, col_text = st.columns([0.65, 0.35], gap="large")
+    with col_plot:
+        st.plotly_chart(fig, use_container_width=True, config={"displaylogo": False})
+        st.caption("使用滑块或播放按钮观察训练过程中风险率与生存曲线的联动变化。")
+
+    val_c = current_entry.get("val_cindex")
+    prev_c = prev_entry.get("val_cindex")
+    base_c = baseline_entry.get("val_cindex")
+
+    def _safe_float(value: Optional[float]) -> Optional[float]:
+        if value is None:
+            return None
+        try:
+            if math.isnan(value):
+                return None
+        except TypeError:
+            return None
+        return float(value)
+
+    val_c = _safe_float(val_c)
+    prev_c = _safe_float(prev_c)
+    base_c = _safe_float(base_c)
+
+    mean_hazard_cur = float(np.nanmean(hazard_current)) if hazard_current.size else float("nan")
+    mean_hazard_prev = float(np.nanmean(hazard_prev)) if hazard_prev.size else mean_hazard_cur
+    hazard_delta_prev = mean_hazard_cur - mean_hazard_prev
+
+    tail_surv_cur = float(np.nanmean(survival_current[:, -1])) if survival_current.size else float("nan")
+    tail_surv_prev = float(np.nanmean(survival_prev[:, -1])) if survival_prev.size else tail_surv_cur
+    tail_surv_base = float(np.nanmean(survival_base[:, -1])) if survival_base.size else tail_surv_cur
+    tail_delta_prev = tail_surv_cur - tail_surv_prev
+    tail_delta_base = tail_surv_cur - tail_surv_base
+
+    lines: List[str] = []
+    if val_c is not None:
+        if prev_c is not None:
+            diff = val_c - prev_c
+            direction = "提升" if diff > 0 else "下降" if diff < 0 else "保持稳定"
+            lines.append(f"验证集 C-index：{val_c:.3f}（相较上一 epoch {direction}{abs(diff):.3f}）。")
+        elif base_c is not None:
+            diff = val_c - base_c
+            direction = "提升" if diff > 0 else "下降" if diff < 0 else "保持稳定"
+            lines.append(f"验证集 C-index：{val_c:.3f}（相较首个 epoch {direction}{abs(diff):.3f}）。")
+        else:
+            lines.append(f"验证集 C-index：{val_c:.3f}。")
+
+    if not math.isnan(mean_hazard_cur) and not math.isnan(mean_hazard_prev):
+        direction = "下降" if hazard_delta_prev < 0 else "上升" if hazard_delta_prev > 0 else "保持稳定"
+        lines.append(
+            f"监测样本的平均瞬时风险率约为 {mean_hazard_cur:.3f}，较上一 epoch {direction}{abs(hazard_delta_prev):.3f}。"
+        )
+
+    if not math.isnan(tail_surv_cur) and not math.isnan(tail_surv_base):
+        direction = "更高" if tail_delta_base > 0 else "更低" if tail_delta_base < 0 else "基本相同"
+        lines.append(
+            f"末尾平均生存概率为 {tail_surv_cur:.3f}，相较首个 epoch {direction}{abs(tail_delta_base):.3f}，"
+            + ("显示风险被逐步抑制。" if tail_delta_base > 0 else "显示风险累积更快。" if tail_delta_base < 0 else "表明整体风险水平保持稳定。")
+        )
+
+    survival_end = survival_current[:, -1] if survival_current.size else np.array([])
+    if survival_end.size:
+        try:
+            worst_idx = int(np.nanargmin(survival_end))
+        except ValueError:
+            worst_idx = None
+        if worst_idx is not None and 0 <= worst_idx < n_samples:
+            worst_label = sample_ids[worst_idx]
+            worst_surv = float(survival_end[worst_idx])
+            worst_hazard_peak = float(np.nanmax(hazard_current[worst_idx]))
+            lines.append(
+                f"{worst_label} 的末尾生存概率约为 {worst_surv:.3f}，峰值风险率约 {worst_hazard_peak:.3f}，"
+                "可重点关注该个体在训练过程中的变化。"
+            )
+
+    with col_text:
+        st.markdown("**训练轨迹解读**")
+        if lines:
+            st.markdown("\n".join(f"- {ln}" for ln in lines))
+        else:
+            st.markdown("当前缺少可用于生成解读的曲线统计信息。")
+
+        durations = [meta.get("duration") for meta in sample_meta]
+        events = [meta.get("event") for meta in sample_meta]
+        avg_hazard = np.nanmean(hazard_current, axis=1) if hazard_current.size else np.array([])
+        table_dict = {
+            "样本": sample_ids,
+            "持续时间": durations,
+            "事件": events,
+            "末尾生存概率": np.round(survival_end, 3) if survival_end.size else [],
+            "平均风险率": np.round(avg_hazard, 3) if avg_hazard.size else [],
+        }
+        table_df = pd.DataFrame(table_dict)
+        st.dataframe(table_df, use_container_width=True, hide_index=True)
 
 def _compute_km(durations, events, limit_to_last_event=True, bin_width=0):
     """
@@ -2122,6 +2398,11 @@ def show():
     if "results" in st.session_state:
         results = st.session_state["results"]
         _render_metrics_block(results)
+
+        curve_data = results.get("training_curve_history")
+        if isinstance(curve_data, dict) and (curve_data.get("entries")):
+            st.subheader("🎬 Hazard / Survival 训练回放")
+            _render_training_curve_history(curve_data)
 
         # Survival curves
         st.subheader("Charts")
