@@ -1592,6 +1592,91 @@ def _run_mysa_core(prepared: Dict[str, Any], config: Dict) -> Dict:
         modality_mask_ref=(torch.tensor(mask_tr, dtype=torch.float32) if mask_tr is not None else None),
     )
 
+    curve_history: List[Dict[str, Any]] = []
+    time_bins = list(range(1, int(prepared["num_bins"]) + 1))
+    max_curve_samples = max(1, int(config.get("curve_samples", 5)))
+
+    def _infer_batch_size(batch_x: Any) -> int:
+        if batch_x is None:
+            return 0
+        if torch.is_tensor(batch_x):
+            return int(batch_x.shape[0])
+        if isinstance(batch_x, dict):
+            for v in batch_x.values():
+                return _infer_batch_size(v)
+            return 0
+        if isinstance(batch_x, (list, tuple)) and batch_x:
+            return _infer_batch_size(batch_x[0])
+        return 0
+
+    def _slice_first_k(obj: Any, k: int):
+        if obj is None:
+            return None
+        if torch.is_tensor(obj):
+            return obj[:k].detach().cpu()
+        if isinstance(obj, dict):
+            return {key: _slice_first_k(val, k) for key, val in obj.items()}
+        if isinstance(obj, (list, tuple)):
+            return type(obj)(_slice_first_k(val, k) for val in obj)
+        return obj
+
+    monitor_features = None
+    monitor_mask = None
+    sample_labels: List[str] = []
+    sample_meta: List[Dict[str, Any]] = []
+
+    try:
+        first_val_batch = next(iter(val_loader))
+    except StopIteration:
+        first_val_batch = None
+
+    if first_val_batch is not None:
+        X0, _, _, mask0 = trainer._unpack_batch(first_val_batch)
+        batch_size = _infer_batch_size(X0)
+        take = min(batch_size, max_curve_samples)
+        monitor_features = _slice_first_k(X0, take)
+        monitor_mask = _slice_first_k(mask0, take) if mask0 is not None else None
+
+        dur_arr = prepared["dur_va"].detach().cpu().numpy() if torch.is_tensor(prepared["dur_va"]) else np.asarray(prepared["dur_va"])
+        evt_arr = prepared["evt_va"].detach().cpu().numpy() if torch.is_tensor(prepared["evt_va"]) else np.asarray(prepared["evt_va"])
+
+        for idx in range(take):
+            label = f"Val #{idx + 1}"
+            duration_val = float(dur_arr[idx]) if idx < len(dur_arr) else None
+            event_val = int(evt_arr[idx]) if idx < len(evt_arr) else None
+            if duration_val is not None and event_val is not None:
+                label = f"Val #{idx + 1} (T={duration_val:.0f}, E={event_val})"
+            sample_labels.append(label)
+            sample_meta.append({"duration": duration_val, "event": event_val})
+
+    def _capture_epoch_curves(epoch_idx: int, val_c: float, losses: Dict[str, float]):
+        if monitor_features is None:
+            return
+        with torch.no_grad():
+            trainer.model.eval()
+            X_dev = trainer._move_to_device(monitor_features)
+            mask_dev = trainer._move_to_device(monitor_mask) if monitor_mask is not None else None
+            out = trainer._model_forward(X_dev, mask_dev)
+            hazards_tensor: torch.Tensor
+            if isinstance(out, tuple):
+                hazards_tensor = out[0]
+            else:
+                hazards_tensor = out
+            hazards_np = hazards_tensor.detach().cpu().numpy()
+            hazards_np = hazards_np[: len(sample_labels)]
+            survival_np = hazards_to_survival(hazards_np)
+        curve_history.append(
+            {
+                "epoch": int(epoch_idx),
+                "val_cindex": float(val_c),
+                "train_nll": float(losses.get("nll", 0.0)),
+                "train_smooth": float(losses.get("smooth", 0.0)),
+                "train_expert": float(losses.get("expert", 0.0)),
+                "hazards": hazards_np.tolist(),
+                "survival": survival_np.tolist(),
+            }
+        )
+
     best = {"val_cindex": 0.0, "epoch": -1}
     epochs = int(config.get("epochs", 200))
     for ep in range(1, epochs + 1):
@@ -1609,6 +1694,7 @@ def _run_mysa_core(prepared: Dict[str, Any], config: Dict) -> Dict:
         le /= steps
 
         val_c = trainer.evaluate_cindex(val_loader, dur_va, evt_va)
+        _capture_epoch_curves(ep, val_c, {"nll": lm, "smooth": ls, "expert": le})
         trainer.sched.step(1.0 - val_c)
 
         if val_c > best["val_cindex"]:
@@ -1633,6 +1719,16 @@ def _run_mysa_core(prepared: Dict[str, Any], config: Dict) -> Dict:
     S_va = hazards_to_survival(H_va)
     surv_df = pd.DataFrame(S_va.T)
     surv_df.index.name = "time_bin"
+
+    if curve_history:
+        curve_payload = {
+            "time_bins": time_bins,
+            "sample_ids": sample_labels,
+            "sample_metadata": sample_meta,
+            "entries": curve_history,
+        }
+    else:
+        curve_payload = None
 
     Xva_t = torch.tensor(X_va, device=device)
     mask_va_t = torch.tensor(mask_va, device=device) if mask_va is not None else None
@@ -1664,6 +1760,7 @@ def _run_mysa_core(prepared: Dict[str, Any], config: Dict) -> Dict:
         "Num Bins": int(prepared["num_bins"]),
         "Val Samples": int(len(X_va)),
         "Surv_Test": surv_df,
+        "training_curve_history": curve_payload,
         "Feature Importance": fi_global,
         "Expert Rules Used": expert_rules or {},
         "Best Epoch": int(best["epoch"]),
