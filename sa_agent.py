@@ -22,7 +22,29 @@ from sa_tools import (
 # Function to select the LLM based on available API keys (from DRIVE project)
 def get_llm():
     """Selects an appropriate LLM based on environment variables."""
-    # Prioritize local vLLM endpoint
+    # Prefer the free Hugging Face Inference API so Streamlit Cloud deployments
+    # don't depend on self-hosted vLLM endpoints.
+    hf_token = os.getenv("HF_API_TOKEN") or os.getenv("HUGGINGFACEHUB_API_TOKEN")
+    if hf_token:
+        from langchain_huggingface import ChatHuggingFace, HuggingFaceEndpoint
+
+        repo_id = os.getenv("HF_LLM_ID", "meta-llama/Meta-Llama-3-8B-Instruct")
+        max_new_tokens = int(os.getenv("HF_MAX_NEW_TOKENS", "512"))
+        temperature = float(os.getenv("HF_TEMPERATURE", "0.7"))
+        top_p = float(os.getenv("HF_TOP_P", "0.9"))
+
+        endpoint = HuggingFaceEndpoint(
+            repo_id=repo_id,
+            temperature=temperature,
+            top_p=top_p,
+            max_new_tokens=max_new_tokens,
+            huggingfacehub_api_token=hf_token,
+            timeout=120,
+        )
+        return ChatHuggingFace(llm=endpoint)
+
+    # Continue supporting other hosted providers in case a user explicitly sets
+    # those credentials.
     if os.getenv("VLLM_ENDPOINT"):
         from langchain_openai import ChatOpenAI
         return ChatOpenAI(
@@ -32,7 +54,6 @@ def get_llm():
             temperature=0.7,
             max_tokens=1024
         )
-    # Fallback to other free services if needed
     elif os.getenv("GROQ_API_KEY"):
         from langchain_openai import ChatOpenAI
         return ChatOpenAI(
@@ -46,7 +67,9 @@ def get_llm():
         from langchain_google_genai import ChatGoogleGenerativeAI
         return ChatGoogleGenerativeAI(model="gemini-pro", temperature=0.7, max_output_tokens=1024)
     else:
-        raise ValueError("No LLM API key found. Please set VLLM_ENDPOINT, GROQ_API_KEY, or GOOGLE_API_KEY.")
+        raise ValueError(
+            "No LLM API key found. Please set HF_API_TOKEN or another supported provider's key."
+        )
 
 
 # Define the Agent's state
