@@ -5,6 +5,7 @@ numpy==1.26.4
 
 # Survival modeling stack (keeps pycox available on Streamlit Cloud)
 torch==2.3.1
+torchvision
 scikit-learn==1.4.2
 torchtuples==0.2.2
 pycox==0.2.3
