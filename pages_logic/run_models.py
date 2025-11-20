@@ -952,8 +952,8 @@ def _render_training_curve_history(curve_data: Dict[str, Any]):
         )
 
     fig.update_layout(
-        height=520,
-        margin=dict(t=60, l=60, r=200, b=90),
+        height=560,
+        margin=dict(t=60, l=60, r=200, b=140),
         hovermode="x unified",
         template="plotly_white",
         legend=dict(orientation="v", y=1.0, x=1.02, yanchor="top", bgcolor="rgba(255,255,255,0.85)"),
@@ -986,9 +986,11 @@ def _render_training_curve_history(curve_data: Dict[str, Any]):
         sliders=[
             {
                 "active": epoch_idx,
-                "pad": {"t": 30},
+                "pad": {"t": 50, "b": 20},
+                "len": 0.9,
+                "x": 0.05,
                 "steps": slider_steps,
-                "currentvalue": {"prefix": "Epoch: "},
+                "currentvalue": {"prefix": "Epoch: ", "offset": 20},
             }
         ],
     )
@@ -2349,6 +2351,14 @@ def show():
     fast_expert = False
     run_clicked = False
 
+    def _enforce_epoch_caps(cfg: dict) -> dict:
+        cfg = dict(cfg)
+        main_epochs = int(cfg.get("epochs", 200))
+        cfg["epochs"] = main_epochs
+        if algo == "TEXGISA":
+            cfg["gen_epochs"] = min(int(cfg.get("gen_epochs", main_epochs)), main_epochs)
+        return cfg
+
     if algo == "TEXGISA":
         c_run1, c_run2, c_run3 = st.columns(3)
         with c_run1:
@@ -2392,6 +2402,7 @@ def show():
                 # Use a smaller epoch count for fast previews.
                 cfg["epochs"] = min(int(cfg.get("epochs", 200)), 50)
                 cfg["capture_training_curves"] = False
+                cfg = _enforce_epoch_caps(cfg)
                 results = run_analysis(algo, df, cfg)
                 st.session_state["results"] = results
                 st.success("✅ FI preview done.")
@@ -2412,6 +2423,7 @@ def show():
                     cfg["ig_time_subsample"] = min(cfg.get("ig_time_subsample", 8), 6)
 
                 cfg["capture_training_curves"] = False
+                cfg = _enforce_epoch_caps(cfg)
 
                 # Execute the training run with the potentially adjusted configuration.
                 results = run_analysis(algo, df, cfg)
@@ -2434,6 +2446,7 @@ def show():
                     cfg["ig_time_subsample"] = min(cfg.get("ig_time_subsample", 8), 6)
 
                 cfg["capture_training_curves"] = True
+                cfg = _enforce_epoch_caps(cfg)
 
                 results = run_analysis(algo, df, cfg)
                 st.session_state["results"] = results
