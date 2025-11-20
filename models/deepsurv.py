@@ -4,6 +4,11 @@ import numpy as np
 import pandas as pd
 import torchtuples as tt
 from sklearn.model_selection import train_test_split
+
+from utils.pycox_setup import ensure_pycox_writable
+
+ensure_pycox_writable()
+
 from pycox.evaluation import EvalSurv
 from pycox.models import CoxPH
 
