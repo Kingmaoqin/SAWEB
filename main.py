@@ -1,4 +1,6 @@
-import os, sys
+import os
+os.environ['PYCOX_DATA_DIR'] = os.path.join(os.getcwd(), 'pycox_data')
+import sys
 ROOT = os.path.dirname(os.path.abspath(__file__))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
@@ -135,3 +137,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+

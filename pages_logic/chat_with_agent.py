@@ -619,7 +619,7 @@ def show():
         st.markdown("</div>", unsafe_allow_html=True)
 
     # ---- full-width results panel ----
-    st.markdown("### 📊 Latest Run Results")
+    st.markdown("### 📊 Results")
     st.markdown('<div class="result-card">', unsafe_allow_html=True)
     last_res = st.session_state.get("last_results")
     df_for_km = st.session_state.get("last_results_df")

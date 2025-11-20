@@ -1,0 +1,30 @@
+streamlit==1.36.0
+# pandas must stay <2.0.0 to satisfy dice-ml 0.10
+pandas==1.5.3
+numpy==1.26.4
+
+# Survival modeling stack (keeps pycox available on Streamlit Cloud)
+torch==2.3.1
+torchvision
+scikit-learn==1.4.2
+torchtuples==0.2.2
+pycox==0.2.3
+lifelines==0.27.8
+
+# Plotting / viz
+plotly==5.22.0
+matplotlib==3.8.4
+seaborn==0.13.2
+
+# Counterfactuals / LLM tooling
+dice-ml==0.10
+langchain==0.2.6
+langchain-core==0.2.16
+langchain-openai==0.1.14
+langchain-google-genai==1.0.6
+langgraph==0.0.50
+langchain-huggingface==0.0.3
+huggingface_hub==0.23.1
+
+requests==2.32.2
+pytest==8.2.2
