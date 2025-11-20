@@ -9,7 +9,13 @@ import streamlit as st
 import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
+import itertools
+import math
 from typing import Any, Dict, List, Optional, Sequence, Set
+
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+from plotly.colors import qualitative as pq
 
 from models import coxtime, deepsurv, deephit
 from models.mysa import run_mysa as run_texgisa
@@ -624,7 +630,7 @@ def _build_expert_rules_from_editor(df_rules, important_features=None):
 
         rule: Dict[str, Any] = {"feature": feat}
 
-        # 兼容旧字段名称（min_mag）并支持新的 importance_floor
+        # Back-compat: accept legacy column name `min_mag` while supporting `importance_floor`
         importance_floor = None
         if "importance_floor" in row:
             importance_floor = row.get("importance_floor")
@@ -644,7 +650,7 @@ def _build_expert_rules_from_editor(df_rules, important_features=None):
             if weight is not None and weight > 0:
                 rule["weight"] = weight
 
-        # 以下字段用于兼容历史配置，当前 UI 不再暴露
+        # Additional legacy fields retained for compatibility with historical configurations
         relation = row.get("relation") if "relation" in row else None
         if isinstance(relation, str):
             relation = relation.strip() or None
@@ -808,6 +814,297 @@ def _plot_survival_curves(surv_df: pd.DataFrame, max_lines: int = 5):
     except Exception:
         last_vals = []
     _md_explain(_explain_plot("surv_traj", cols=list(cols), last_vals=last_vals))
+
+
+def _render_training_curve_history(curve_data: Dict[str, Any]):
+    entries: List[Dict[str, Any]] = curve_data.get("entries") or []
+    if not entries:
+        return
+
+    time_bins = curve_data.get("time_bins")
+    if not time_bins and entries and entries[0].get("hazards"):
+        time_bins = list(range(1, len(entries[0]["hazards"][0]) + 1))
+    time_bins = time_bins or list(range(1, 2))
+
+    sample_ids: List[str] = curve_data.get("sample_ids") or []
+    if not sample_ids and entries and entries[0].get("hazards"):
+        sample_ids = [f"Sample {i + 1}" for i in range(len(entries[0]["hazards"]))]
+    sample_meta = curve_data.get("sample_metadata") or [{} for _ in sample_ids]
+
+    def _format_epoch(option: int) -> str:
+        entry = entries[option]
+        val_c = entry.get("val_cindex")
+        if val_c is None or (isinstance(val_c, float) and math.isnan(val_c)):
+            return f"Epoch {entry.get('epoch', option + 1)}"
+        return f"Epoch {entry.get('epoch', option + 1)} (C-index={val_c:.3f})"
+
+    epoch_idx = st.select_slider(
+        "Select training epoch",
+        options=list(range(len(entries))),
+        value=len(entries) - 1,
+        format_func=_format_epoch,
+        key="training_curve_epoch",
+    )
+
+    current_entry = entries[epoch_idx]
+    baseline_entry = entries[0]
+    prev_entry = entries[epoch_idx - 1] if epoch_idx > 0 else current_entry
+
+    def _ensure_2d(arr_like: Any) -> np.ndarray:
+        arr = np.asarray(arr_like, dtype=float)
+        if arr.size == 0:
+            return np.zeros((len(sample_ids), len(time_bins)), dtype=float)
+        if arr.ndim == 1:
+            arr = arr[None, :]
+        return arr[: len(sample_ids), : len(time_bins)]
+
+    hazard_current = _ensure_2d(current_entry.get("hazards", []))
+    survival_current = _ensure_2d(current_entry.get("survival", []))
+    n_samples = min(len(sample_ids), hazard_current.shape[0])
+    sample_ids = sample_ids[:n_samples]
+    sample_meta = sample_meta[:n_samples]
+    hazard_current = hazard_current[:n_samples]
+    survival_current = survival_current[:n_samples]
+
+    hazard_prev = _ensure_2d(prev_entry.get("hazards", hazard_current))[:n_samples]
+    survival_prev = _ensure_2d(prev_entry.get("survival", survival_current))[:n_samples]
+    hazard_base = _ensure_2d(baseline_entry.get("hazards", hazard_current))[:n_samples]
+    survival_base = _ensure_2d(baseline_entry.get("survival", survival_current))[:n_samples]
+
+    palette = list(pq.Set2) + list(pq.Plotly) + list(pq.D3)
+    color_cycle = itertools.cycle(palette)
+    colors = [next(color_cycle) for _ in range(max(n_samples, 1))]
+
+    fig = make_subplots(
+        rows=1,
+        cols=2,
+        subplot_titles=("Hazard vs Time", "Survival vs Time"),
+        shared_xaxes=True,
+    )
+
+    hazard_global_max = 0.0
+    for entry in entries:
+        hz = np.asarray(entry.get("hazards", []), dtype=float)
+        if hz.size:
+            hazard_global_max = max(hazard_global_max, float(np.nanmax(hz)))
+
+    for idx in range(n_samples):
+        label = sample_ids[idx]
+        color = colors[idx]
+        fig.add_trace(
+            go.Scatter(
+                x=time_bins,
+                y=hazard_current[idx],
+                name=f"{label} Hazard",
+                legendgroup=label,
+                line=dict(color=color, width=3),
+            ),
+            row=1,
+            col=1,
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=time_bins,
+                y=survival_current[idx],
+                name=f"{label} Survival",
+                legendgroup=label,
+                line=dict(color=color, dash="dash", width=3),
+                showlegend=False,
+            ),
+            row=1,
+            col=2,
+        )
+
+    frames = []
+    for entry in entries:
+        hz = _ensure_2d(entry.get("hazards", []))[:n_samples]
+        sv = _ensure_2d(entry.get("survival", []))[:n_samples]
+        frame_traces = []
+        for idx in range(n_samples):
+            frame_traces.append(
+                go.Scatter(x=time_bins, y=hz[idx])
+            )
+        for idx in range(n_samples):
+            frame_traces.append(
+                go.Scatter(x=time_bins, y=sv[idx])
+            )
+        frames.append(
+            go.Frame(
+                data=frame_traces,
+                name=str(entry.get("epoch", "")),
+            )
+        )
+
+    fig.frames = frames
+
+    slider_steps = [
+        {
+            "args": [[str(entry.get("epoch", ""))], {"frame": {"duration": 600, "redraw": False}, "mode": "immediate"}],
+            "label": f"Ep {entry.get('epoch', idx + 1)}",
+            "method": "animate",
+        }
+        for idx, entry in enumerate(entries)
+    ]
+
+    fig.update_layout(
+        height=520,
+        margin=dict(t=60, l=60, r=40, b=50),
+        hovermode="x unified",
+        template="plotly_white",
+        legend=dict(orientation="h", y=-0.18, x=0.0),
+        xaxis=dict(title="Time bin"),
+        xaxis2=dict(title="Time bin"),
+        yaxis=dict(title="Instantaneous hazard", range=[0, max(0.05, hazard_global_max * 1.1)]),
+        yaxis2=dict(title="Survival probability", range=[0, 1.02]),
+        updatemenus=[
+            {
+                "type": "buttons",
+                "direction": "left",
+                "x": 0.0,
+                "y": 1.18,
+                "showactive": False,
+                "pad": {"r": 10, "t": 30},
+                "buttons": [
+                    {
+                        "label": "▶️ Play",
+                        "method": "animate",
+                        "args": [None, {"frame": {"duration": 600, "redraw": False}, "fromcurrent": True}],
+                    },
+                    {
+                        "label": "⏸ Pause",
+                        "method": "animate",
+                        "args": [[None], {"frame": {"duration": 0, "redraw": False}, "mode": "immediate"}],
+                    },
+                ],
+            }
+        ],
+        sliders=[
+            {
+                "active": epoch_idx,
+                "pad": {"t": 30},
+                "steps": slider_steps,
+                "currentvalue": {"prefix": "Epoch: "},
+            }
+        ],
+    )
+
+    if fig.layout.sliders:
+        fig.layout.sliders[0]["active"] = epoch_idx
+
+    col_plot, col_text = st.columns([0.65, 0.35], gap="large")
+    with col_plot:
+        st.plotly_chart(fig, use_container_width=True, config={"displaylogo": False})
+        st.caption("Use the slider or play controls to follow how hazards and survival curves evolve across epochs.")
+
+    val_c = current_entry.get("val_cindex")
+    prev_c = prev_entry.get("val_cindex")
+    base_c = baseline_entry.get("val_cindex")
+
+    def _safe_float(value: Optional[float]) -> Optional[float]:
+        if value is None:
+            return None
+        try:
+            if math.isnan(value):
+                return None
+        except TypeError:
+            return None
+        return float(value)
+
+    val_c = _safe_float(val_c)
+    prev_c = _safe_float(prev_c)
+    base_c = _safe_float(base_c)
+
+    mean_hazard_cur = float(np.nanmean(hazard_current)) if hazard_current.size else float("nan")
+    mean_hazard_prev = float(np.nanmean(hazard_prev)) if hazard_prev.size else mean_hazard_cur
+    hazard_delta_prev = mean_hazard_cur - mean_hazard_prev
+
+    tail_surv_cur = float(np.nanmean(survival_current[:, -1])) if survival_current.size else float("nan")
+    tail_surv_prev = float(np.nanmean(survival_prev[:, -1])) if survival_prev.size else tail_surv_cur
+    tail_surv_base = float(np.nanmean(survival_base[:, -1])) if survival_base.size else tail_surv_cur
+    tail_delta_prev = tail_surv_cur - tail_surv_prev
+    tail_delta_base = tail_surv_cur - tail_surv_base
+
+    lines: List[str] = []
+    if val_c is not None:
+        if prev_c is not None and epoch_idx > 0:
+            diff = val_c - prev_c
+            if diff > 0:
+                delta_txt = f"+{diff:.3f} vs previous epoch"
+            elif diff < 0:
+                delta_txt = f"{diff:.3f} vs previous epoch"
+            else:
+                delta_txt = "no change vs previous epoch"
+            lines.append(f"Validation C-index: {val_c:.3f} ({delta_txt}).")
+        elif base_c is not None and epoch_idx > 0:
+            diff = val_c - base_c
+            if diff > 0:
+                delta_txt = f"+{diff:.3f} vs first epoch"
+            elif diff < 0:
+                delta_txt = f"{diff:.3f} vs first epoch"
+            else:
+                delta_txt = "no change vs first epoch"
+            lines.append(f"Validation C-index: {val_c:.3f} ({delta_txt}).")
+        else:
+            lines.append(f"Validation C-index: {val_c:.3f}.")
+
+    if not math.isnan(mean_hazard_cur) and not math.isnan(mean_hazard_prev):
+        if abs(hazard_delta_prev) < 1e-9:
+            change_clause = "matching the previous epoch."
+        else:
+            direction = "decreased" if hazard_delta_prev < 0 else "increased"
+            change_clause = f"{direction} by {abs(hazard_delta_prev):.3f} compared with the previous epoch."
+        lines.append(
+            f"Mean instantaneous hazard across monitored samples is {mean_hazard_cur:.3f}, {change_clause}"
+        )
+
+    if not math.isnan(tail_surv_cur) and not math.isnan(tail_surv_base):
+        if abs(tail_delta_base) < 1e-9:
+            baseline_clause = "matching the first epoch"
+            interpret = "suggesting overall risk remains steady."
+        elif tail_delta_base > 0:
+            baseline_clause = f"+{abs(tail_delta_base):.3f} vs the first epoch"
+            interpret = "suggesting the model is suppressing risk over time."
+        else:
+            baseline_clause = f"-{abs(tail_delta_base):.3f} vs the first epoch"
+            interpret = "suggesting risk is accumulating faster."
+        lines.append(
+            f"Mean survival at the horizon is {tail_surv_cur:.3f} ({baseline_clause}), {interpret}"
+        )
+
+    survival_end = survival_current[:, -1] if survival_current.size else np.array([])
+    if survival_end.size:
+        try:
+            worst_idx = int(np.nanargmin(survival_end))
+        except ValueError:
+            worst_idx = None
+        if worst_idx is not None and 0 <= worst_idx < n_samples:
+            worst_label = sample_ids[worst_idx]
+            worst_surv = float(survival_end[worst_idx])
+            worst_hazard_peak = float(np.nanmax(hazard_current[worst_idx]))
+            lines.append(
+                f"{worst_label} finishes with survival ≈ {worst_surv:.3f} and a peak hazard ≈ {worst_hazard_peak:.3f}; "
+                "track this individual to understand how training shifts high-risk profiles."
+            )
+
+    with col_text:
+        st.markdown("**Training trajectory highlights**")
+        if lines:
+            st.markdown("\n".join(f"- {ln}" for ln in lines))
+        else:
+            st.markdown("No curve statistics are available yet to summarise this epoch.")
+
+        durations = [meta.get("duration") for meta in sample_meta]
+        events = [meta.get("event") for meta in sample_meta]
+        avg_hazard = np.nanmean(hazard_current, axis=1) if hazard_current.size else np.array([])
+        table_dict = {
+            "Sample": sample_ids,
+            "Duration": durations,
+            "Event": events,
+            "End survival": np.round(survival_end, 3) if survival_end.size else [],
+            "Mean hazard": np.round(avg_hazard, 3) if avg_hazard.size else [],
+        }
+        table_df = pd.DataFrame(table_dict)
+        st.dataframe(table_df, use_container_width=True, hide_index=True)
 
 def _compute_km(durations, events, limit_to_last_event=True, bin_width=0):
     """
@@ -2043,11 +2340,12 @@ def show():
     # ===================== 5) Run =============================================
     preview_clicked = False
     train_clicked = False
+    train_with_playback_clicked = False
     fast_expert = False
     run_clicked = False
 
     if algo == "TEXGISA":
-        c_run1, c_run2 = st.columns(2)
+        c_run1, c_run2, c_run3 = st.columns(3)
         with c_run1:
             preview_clicked = st.button(
                 "👀 Preview FI (no expert priors)",
@@ -2058,13 +2356,21 @@ def show():
             train_clicked = st.button(
                 "🚀 Train with Expert Priors",
                 use_container_width=True,
-                help="Train TEXGISA with the configured expert rules and λ_expert penalty to obtain final metrics.",
+                help="Train TEXGISA with the configured expert rules and λ_expert penalty (fast path without hazard playback).",
             )
+            st.caption("Fastest training path – skips per-epoch curve capture.")
             fast_expert = st.checkbox(
                 "Fast expert mode (lighter generator & TEXGISA importance)",
                 value=True,
                 help=_qhelp_md("fast_mode"),
             )
+        with c_run3:
+            train_with_playback_clicked = st.button(
+                "🎬 Train + Hazard Playback",
+                use_container_width=True,
+                help="Train TEXGISA and capture per-epoch hazard/survival curves for the playback widget (runs longer).",
+            )
+            st.caption("Captures per-epoch curves for visual playback. Expect longer runtimes.")
     else:
         run_clicked = st.button(
             f"🚀 Train {algo}",
@@ -2080,6 +2386,7 @@ def show():
                 cfg["lambda_expert"] = 0.0              # Disable expert penalty during the preview pass.
                 # Use a smaller epoch count for fast previews.
                 cfg["epochs"] = min(int(cfg.get("epochs", 200)), 50)
+                cfg["capture_training_curves"] = False
                 results = run_analysis(algo, df, cfg)
                 st.session_state["results"] = results
                 st.success("✅ FI preview done.")
@@ -2099,12 +2406,33 @@ def show():
                     cfg["ig_batch_samples"] = min(cfg.get("ig_batch_samples", 32), 24)
                     cfg["ig_time_subsample"] = min(cfg.get("ig_time_subsample", 8), 6)
 
+                cfg["capture_training_curves"] = False
+
                 # Execute the training run with the potentially adjusted configuration.
                 results = run_analysis(algo, df, cfg)
 
                 st.session_state["results"] = results
                 st.success("✅ Training completed.")
 
+            except Exception as e:
+                st.error(f"Run failed: {e}")
+
+    if train_with_playback_clicked:
+        with st.spinner("Training with hazard playback (captures per-epoch curves)..."):
+            try:
+                cfg = dict(config)
+
+                if fast_expert:
+                    cfg["gen_epochs"] = min(cfg.get("gen_epochs", 200), 40)
+                    cfg["ig_steps"] = min(cfg.get("ig_steps", 20), 10)
+                    cfg["ig_batch_samples"] = min(cfg.get("ig_batch_samples", 32), 24)
+                    cfg["ig_time_subsample"] = min(cfg.get("ig_time_subsample", 8), 6)
+
+                cfg["capture_training_curves"] = True
+
+                results = run_analysis(algo, df, cfg)
+                st.session_state["results"] = results
+                st.success("✅ Training completed with hazard playback enabled.")
             except Exception as e:
                 st.error(f"Run failed: {e}")
 
@@ -2122,6 +2450,13 @@ def show():
     if "results" in st.session_state:
         results = st.session_state["results"]
         _render_metrics_block(results)
+
+        curve_data = results.get("training_curve_history")
+        if isinstance(curve_data, dict) and (curve_data.get("entries")):
+            st.subheader("🎬 Hazard / Survival Training Playback")
+            _render_training_curve_history(curve_data)
+        elif algo == "TEXGISA":
+            st.info("Run **Train + Hazard Playback** to capture per-epoch hazards and survival curves for this widget.")
 
         # Survival curves
         st.subheader("Charts")
