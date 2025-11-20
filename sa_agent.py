@@ -1,5 +1,6 @@
 # sa_agent.py
 import streamlit as st
+from langchain_huggingface import ChatHuggingFace, HuggingFaceEndpoint
 from typing import TypedDict, Annotated, List, Dict, Any
 import operator
 import os
