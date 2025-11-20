@@ -37,12 +37,14 @@ def ensure_pycox_writable() -> None:
         pass
 
     cache_root = Path(tempfile.gettempdir()) / "pycox_pkg"
-    if not cache_root.exists():
-        shutil.copytree(pkg_root, cache_root, dirs_exist_ok=True)
+    cache_pkg = cache_root / "pycox"
 
-    cache_data = cache_root / "datasets" / "data"
+    if not cache_pkg.exists():
+        shutil.copytree(pkg_root, cache_pkg, dirs_exist_ok=True)
+
+    cache_data = cache_pkg / "datasets" / "data"
     cache_data.mkdir(parents=True, exist_ok=True)
 
-    cache_parent = str(cache_root.parent)
+    cache_parent = str(cache_root)
     if cache_parent not in sys.path:
         sys.path.insert(0, cache_parent)
