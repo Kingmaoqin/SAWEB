@@ -841,6 +841,12 @@ def _render_training_curve_history(curve_data: Dict[str, Any]):
     epoch_key = "training_curve_epoch"
     epoch_options = list(range(len(entries)))
     epoch_default = len(entries) - 1
+
+    options_key = f"{epoch_key}_options"
+    if st.session_state.get(options_key) != epoch_options:
+        st.session_state.pop(epoch_key, None)
+        st.session_state[options_key] = epoch_options
+
     if epoch_key in st.session_state and st.session_state[epoch_key] not in epoch_options:
         st.session_state[epoch_key] = epoch_default
 
