@@ -820,6 +820,14 @@ class MySATrainer:
                 self.G = TabularGeneratorWithRealInput(self.X_train_ref.shape[1],
                                                        self.latent_dim, self.extreme_dim).to(self.device)
                 self.G.load_state_dict(torch.load(ckpt_path, map_location=self.device))
+                # Recompute reference statistics so TEXGI baselines remain valid even
+                # when loading a cached generator from disk. Previously, ref_stats
+                # stayed ``None`` in this path, causing KeyError("mu") during
+                # hazard playback because TEXGI expected mean/std tensors alongside
+                # the generator.
+                Xtr = self.X_train_ref.to(self.device)
+                mu, std = _standardize_fit(Xtr)
+                self.ref_stats = {"mu": mu, "std": std}
                 return
             except Exception:
                 self.G = None  # Fall back to retraining if loading fails
