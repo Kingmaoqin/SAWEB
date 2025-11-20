@@ -30,11 +30,8 @@ def ensure_pycox_writable() -> None:
     pkg_root = Path(spec.submodule_search_locations[0])
     data_dir = pkg_root / "datasets" / "data"
 
-    try:
-        data_dir.mkdir(parents=True, exist_ok=True)
+    if _is_writable(data_dir):
         return
-    except PermissionError:
-        pass
 
     cache_root = Path(tempfile.gettempdir()) / "pycox_pkg"
     cache_pkg = cache_root / "pycox"
@@ -48,3 +45,17 @@ def ensure_pycox_writable() -> None:
     cache_parent = str(cache_root)
     if cache_parent not in sys.path:
         sys.path.insert(0, cache_parent)
+
+
+def _is_writable(path: Path) -> bool:
+    """Return True if ``path`` can be created and written to."""
+
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        test_file = path / ".write_test"
+        with test_file.open("w"):
+            pass
+        test_file.unlink()
+        return True
+    except PermissionError:
+        return False
