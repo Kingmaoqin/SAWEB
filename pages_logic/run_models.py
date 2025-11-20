@@ -937,21 +937,26 @@ def _render_training_curve_history(curve_data: Dict[str, Any]):
 
     fig.frames = frames
 
-    slider_steps = [
-        {
-            "args": [[str(entry.get("epoch", ""))], {"frame": {"duration": 600, "redraw": False}, "mode": "immediate"}],
-            "label": f"Ep {entry.get('epoch', idx + 1)}",
-            "method": "animate",
-        }
-        for idx, entry in enumerate(entries)
-    ]
+    n_epochs = len(entries)
+    label_every = 1 if n_epochs <= 12 else math.ceil(n_epochs / 10)
+    slider_steps = []
+    for idx, entry in enumerate(entries):
+        epoch_label = entry.get("epoch", idx + 1)
+        show_label = (idx % label_every == 0) or (idx == 0) or (idx == n_epochs - 1)
+        slider_steps.append(
+            {
+                "args": [[str(epoch_label)], {"frame": {"duration": 600, "redraw": False}, "mode": "immediate"}],
+                "label": f"Ep {epoch_label}" if show_label else "",
+                "method": "animate",
+            }
+        )
 
     fig.update_layout(
         height=520,
-        margin=dict(t=60, l=60, r=40, b=50),
+        margin=dict(t=60, l=60, r=200, b=90),
         hovermode="x unified",
         template="plotly_white",
-        legend=dict(orientation="h", y=-0.18, x=0.0),
+        legend=dict(orientation="v", y=1.0, x=1.02, yanchor="top", bgcolor="rgba(255,255,255,0.85)"),
         xaxis=dict(title="Time bin"),
         xaxis2=dict(title="Time bin"),
         yaxis=dict(title="Instantaneous hazard", range=[0, max(0.05, hazard_global_max * 1.1)]),
