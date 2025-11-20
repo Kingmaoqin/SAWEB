@@ -22,26 +22,42 @@ from sa_tools import (
 # Function to select the LLM based on available API keys (from DRIVE project)
 def get_llm():
     """Selects an appropriate LLM based on environment variables."""
-    # Prefer the free Hugging Face Inference API so Streamlit Cloud deployments
-    # don't depend on self-hosted vLLM endpoints.
-    hf_token = os.getenv("HF_API_TOKEN") or os.getenv("HUGGINGFACEHUB_API_TOKEN")
-    if hf_token:
-        from langchain_huggingface import ChatHuggingFace, HuggingFaceEndpoint
 
-        repo_id = os.getenv("HF_LLM_ID", "meta-llama/Meta-Llama-3-8B-Instruct")
-        max_new_tokens = int(os.getenv("HF_MAX_NEW_TOKENS", "512"))
-        temperature = float(os.getenv("HF_TEMPERATURE", "0.7"))
-        top_p = float(os.getenv("HF_TOP_P", "0.9"))
+    hf_token = None
+    
+    possible_keys = ["HF_TOKEN", "HUGGINGFACEHUB_API_TOKEN", "HF_API_TOKEN"]
+    
+    for key in possible_keys:
+        if key in st.secrets:
+            hf_token = st.secrets[key]
+            break
 
-        endpoint = HuggingFaceEndpoint(
-            repo_id=repo_id,
-            temperature=temperature,
-            top_p=top_p,
-            max_new_tokens=max_new_tokens,
-            huggingfacehub_api_token=hf_token,
-            timeout=120,
-        )
-        return ChatHuggingFace(llm=endpoint)
+    if not hf_token:
+        for key in possible_keys:
+            if os.getenv(key):
+                hf_token = os.getenv(key)
+                break
+
+    if not hf_token:
+        st.error("⚠️ not found Hugging Face Token")
+        raise ValueError("Hugging Face Token not found.")
+
+    repo_id = os.getenv("HF_LLM_ID", "meta-llama/Meta-Llama-3-8B-Instruct")
+    max_new_tokens = int(os.getenv("HF_MAX_NEW_TOKENS", "512"))
+    temperature = float(os.getenv("HF_TEMPERATURE", "0.7"))
+    top_p = float(os.getenv("HF_TOP_P", "0.9"))
+
+    endpoint = HuggingFaceEndpoint(
+        repo_id=repo_id,
+        temperature=temperature,
+        top_p=top_p,
+        max_new_tokens=max_new_tokens,
+        huggingfacehub_api_token=hf_token, # 显式传入 Token
+        timeout=120,
+    )
+    
+    # 关键修改：显式传入 model_id，避免 ChatHuggingFace 尝试去查询你的端点权限
+    return ChatHuggingFace(llm=endpoint, model_id=repo_id)
 
     # Continue supporting other hosted providers in case a user explicitly sets
     # those credentials.
