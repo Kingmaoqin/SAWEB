@@ -838,12 +838,24 @@ def _render_training_curve_history(curve_data: Dict[str, Any]):
             return f"Epoch {entry.get('epoch', option + 1)}"
         return f"Epoch {entry.get('epoch', option + 1)} (C-index={val_c:.3f})"
 
+    epoch_key = "training_curve_epoch"
+    epoch_options = list(range(len(entries)))
+    epoch_default = len(entries) - 1
+
+    options_key = f"{epoch_key}_options"
+    if st.session_state.get(options_key) != epoch_options:
+        st.session_state.pop(epoch_key, None)
+        st.session_state[options_key] = epoch_options
+
+    if epoch_key in st.session_state and st.session_state[epoch_key] not in epoch_options:
+        st.session_state[epoch_key] = epoch_default
+
     epoch_idx = st.select_slider(
         "Select training epoch",
-        options=list(range(len(entries))),
-        value=len(entries) - 1,
+        options=epoch_options,
+        value=st.session_state.get(epoch_key, epoch_default),
         format_func=_format_epoch,
-        key="training_curve_epoch",
+        key=epoch_key,
     )
 
     current_entry = entries[epoch_idx]
