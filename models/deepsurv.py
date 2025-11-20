@@ -1,3 +1,5 @@
+import os
+os.environ['PYCOX_NO_DATA'] = '1'
 import numpy as np
 import pandas as pd
 import torchtuples as tt
@@ -132,3 +134,4 @@ def run_deepsurv(data, config):
         "Integrated Negative Log-Likelihood": integrated_nbll,
         "Surv_Test": surv_test
     }
+
