@@ -9,8 +9,12 @@ with the link can open the app without running a local LLM server.
 
 1. Fork or clone this repository to your personal GitHub account.
 2. Ensure the new `requirements.txt` is committed so Streamlit knows which
-   Python dependencies to install.
-3. Push the repo to GitHub. Streamlit Cloud only works with public repos in the
+   Python dependencies to install. It pins `pandas<2.0` (for `dice-ml==0.10`)
+   and adds `pycox` for the survival models.
+3. In Streamlit's **Advanced settings**, set the runtime to **Python 3.10**
+   (or 3.11). These versions have prebuilt CPU wheels for PyTorch and pycox,
+   so the installer succeeds without compiling.
+4. Push the repo to GitHub. Streamlit Cloud only works with public repos in the
    free plan.
 
 ## 2. Create a free Hugging Face access token
