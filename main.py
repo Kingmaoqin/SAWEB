@@ -1,4 +1,5 @@
 import os, sys
+os.environ['PYCOX_NO_DATA'] = '1'
 ROOT = os.path.dirname(os.path.abspath(__file__))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
@@ -135,3 +136,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
