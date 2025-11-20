@@ -630,7 +630,7 @@ def _build_expert_rules_from_editor(df_rules, important_features=None):
 
         rule: Dict[str, Any] = {"feature": feat}
 
-        # 兼容旧字段名称（min_mag）并支持新的 importance_floor
+        # Back-compat: accept legacy column name `min_mag` while supporting `importance_floor`
         importance_floor = None
         if "importance_floor" in row:
             importance_floor = row.get("importance_floor")
@@ -650,7 +650,7 @@ def _build_expert_rules_from_editor(df_rules, important_features=None):
             if weight is not None and weight > 0:
                 rule["weight"] = weight
 
-        # 以下字段用于兼容历史配置，当前 UI 不再暴露
+        # Additional legacy fields retained for compatibility with historical configurations
         relation = row.get("relation") if "relation" in row else None
         if isinstance(relation, str):
             relation = relation.strip() or None
@@ -828,7 +828,7 @@ def _render_training_curve_history(curve_data: Dict[str, Any]):
 
     sample_ids: List[str] = curve_data.get("sample_ids") or []
     if not sample_ids and entries and entries[0].get("hazards"):
-        sample_ids = [f"样本{i + 1}" for i in range(len(entries[0]["hazards"]))]
+        sample_ids = [f"Sample {i + 1}" for i in range(len(entries[0]["hazards"]))]
     sample_meta = curve_data.get("sample_metadata") or [{} for _ in sample_ids]
 
     def _format_epoch(option: int) -> str:
@@ -839,7 +839,7 @@ def _render_training_curve_history(curve_data: Dict[str, Any]):
         return f"Epoch {entry.get('epoch', option + 1)} (C-index={val_c:.3f})"
 
     epoch_idx = st.select_slider(
-        "选择训练阶段",
+        "Select training epoch",
         options=list(range(len(entries))),
         value=len(entries) - 1,
         format_func=_format_epoch,
@@ -952,10 +952,10 @@ def _render_training_curve_history(curve_data: Dict[str, Any]):
         hovermode="x unified",
         template="plotly_white",
         legend=dict(orientation="h", y=-0.18, x=0.0),
-        xaxis=dict(title="时间区间"),
-        xaxis2=dict(title="时间区间"),
-        yaxis=dict(title="瞬时风险率", range=[0, max(0.05, hazard_global_max * 1.1)]),
-        yaxis2=dict(title="生存概率", range=[0, 1.02]),
+        xaxis=dict(title="Time bin"),
+        xaxis2=dict(title="Time bin"),
+        yaxis=dict(title="Instantaneous hazard", range=[0, max(0.05, hazard_global_max * 1.1)]),
+        yaxis2=dict(title="Survival probability", range=[0, 1.02]),
         updatemenus=[
             {
                 "type": "buttons",
@@ -966,12 +966,12 @@ def _render_training_curve_history(curve_data: Dict[str, Any]):
                 "pad": {"r": 10, "t": 30},
                 "buttons": [
                     {
-                        "label": "▶️ 播放",
+                        "label": "▶️ Play",
                         "method": "animate",
                         "args": [None, {"frame": {"duration": 600, "redraw": False}, "fromcurrent": True}],
                     },
                     {
-                        "label": "⏸ 暂停",
+                        "label": "⏸ Pause",
                         "method": "animate",
                         "args": [[None], {"frame": {"duration": 0, "redraw": False}, "mode": "immediate"}],
                     },
@@ -994,7 +994,7 @@ def _render_training_curve_history(curve_data: Dict[str, Any]):
     col_plot, col_text = st.columns([0.65, 0.35], gap="large")
     with col_plot:
         st.plotly_chart(fig, use_container_width=True, config={"displaylogo": False})
-        st.caption("使用滑块或播放按钮观察训练过程中风险率与生存曲线的联动变化。")
+        st.caption("Use the slider or play controls to follow how hazards and survival curves evolve across epochs.")
 
     val_c = current_entry.get("val_cindex")
     prev_c = prev_entry.get("val_cindex")
@@ -1026,28 +1026,49 @@ def _render_training_curve_history(curve_data: Dict[str, Any]):
 
     lines: List[str] = []
     if val_c is not None:
-        if prev_c is not None:
+        if prev_c is not None and epoch_idx > 0:
             diff = val_c - prev_c
-            direction = "提升" if diff > 0 else "下降" if diff < 0 else "保持稳定"
-            lines.append(f"验证集 C-index：{val_c:.3f}（相较上一 epoch {direction}{abs(diff):.3f}）。")
-        elif base_c is not None:
+            if diff > 0:
+                delta_txt = f"+{diff:.3f} vs previous epoch"
+            elif diff < 0:
+                delta_txt = f"{diff:.3f} vs previous epoch"
+            else:
+                delta_txt = "no change vs previous epoch"
+            lines.append(f"Validation C-index: {val_c:.3f} ({delta_txt}).")
+        elif base_c is not None and epoch_idx > 0:
             diff = val_c - base_c
-            direction = "提升" if diff > 0 else "下降" if diff < 0 else "保持稳定"
-            lines.append(f"验证集 C-index：{val_c:.3f}（相较首个 epoch {direction}{abs(diff):.3f}）。")
+            if diff > 0:
+                delta_txt = f"+{diff:.3f} vs first epoch"
+            elif diff < 0:
+                delta_txt = f"{diff:.3f} vs first epoch"
+            else:
+                delta_txt = "no change vs first epoch"
+            lines.append(f"Validation C-index: {val_c:.3f} ({delta_txt}).")
         else:
-            lines.append(f"验证集 C-index：{val_c:.3f}。")
+            lines.append(f"Validation C-index: {val_c:.3f}.")
 
     if not math.isnan(mean_hazard_cur) and not math.isnan(mean_hazard_prev):
-        direction = "下降" if hazard_delta_prev < 0 else "上升" if hazard_delta_prev > 0 else "保持稳定"
+        if abs(hazard_delta_prev) < 1e-9:
+            change_clause = "matching the previous epoch."
+        else:
+            direction = "decreased" if hazard_delta_prev < 0 else "increased"
+            change_clause = f"{direction} by {abs(hazard_delta_prev):.3f} compared with the previous epoch."
         lines.append(
-            f"监测样本的平均瞬时风险率约为 {mean_hazard_cur:.3f}，较上一 epoch {direction}{abs(hazard_delta_prev):.3f}。"
+            f"Mean instantaneous hazard across monitored samples is {mean_hazard_cur:.3f}, {change_clause}"
         )
 
     if not math.isnan(tail_surv_cur) and not math.isnan(tail_surv_base):
-        direction = "更高" if tail_delta_base > 0 else "更低" if tail_delta_base < 0 else "基本相同"
+        if abs(tail_delta_base) < 1e-9:
+            baseline_clause = "matching the first epoch"
+            interpret = "suggesting overall risk remains steady."
+        elif tail_delta_base > 0:
+            baseline_clause = f"+{abs(tail_delta_base):.3f} vs the first epoch"
+            interpret = "suggesting the model is suppressing risk over time."
+        else:
+            baseline_clause = f"-{abs(tail_delta_base):.3f} vs the first epoch"
+            interpret = "suggesting risk is accumulating faster."
         lines.append(
-            f"末尾平均生存概率为 {tail_surv_cur:.3f}，相较首个 epoch {direction}{abs(tail_delta_base):.3f}，"
-            + ("显示风险被逐步抑制。" if tail_delta_base > 0 else "显示风险累积更快。" if tail_delta_base < 0 else "表明整体风险水平保持稳定。")
+            f"Mean survival at the horizon is {tail_surv_cur:.3f} ({baseline_clause}), {interpret}"
         )
 
     survival_end = survival_current[:, -1] if survival_current.size else np.array([])
@@ -1061,26 +1082,26 @@ def _render_training_curve_history(curve_data: Dict[str, Any]):
             worst_surv = float(survival_end[worst_idx])
             worst_hazard_peak = float(np.nanmax(hazard_current[worst_idx]))
             lines.append(
-                f"{worst_label} 的末尾生存概率约为 {worst_surv:.3f}，峰值风险率约 {worst_hazard_peak:.3f}，"
-                "可重点关注该个体在训练过程中的变化。"
+                f"{worst_label} finishes with survival ≈ {worst_surv:.3f} and a peak hazard ≈ {worst_hazard_peak:.3f}; "
+                "track this individual to understand how training shifts high-risk profiles."
             )
 
     with col_text:
-        st.markdown("**训练轨迹解读**")
+        st.markdown("**Training trajectory highlights**")
         if lines:
             st.markdown("\n".join(f"- {ln}" for ln in lines))
         else:
-            st.markdown("当前缺少可用于生成解读的曲线统计信息。")
+            st.markdown("No curve statistics are available yet to summarise this epoch.")
 
         durations = [meta.get("duration") for meta in sample_meta]
         events = [meta.get("event") for meta in sample_meta]
         avg_hazard = np.nanmean(hazard_current, axis=1) if hazard_current.size else np.array([])
         table_dict = {
-            "样本": sample_ids,
-            "持续时间": durations,
-            "事件": events,
-            "末尾生存概率": np.round(survival_end, 3) if survival_end.size else [],
-            "平均风险率": np.round(avg_hazard, 3) if avg_hazard.size else [],
+            "Sample": sample_ids,
+            "Duration": durations,
+            "Event": events,
+            "End survival": np.round(survival_end, 3) if survival_end.size else [],
+            "Mean hazard": np.round(avg_hazard, 3) if avg_hazard.size else [],
         }
         table_df = pd.DataFrame(table_dict)
         st.dataframe(table_df, use_container_width=True, hide_index=True)
@@ -2319,11 +2340,12 @@ def show():
     # ===================== 5) Run =============================================
     preview_clicked = False
     train_clicked = False
+    train_with_playback_clicked = False
     fast_expert = False
     run_clicked = False
 
     if algo == "TEXGISA":
-        c_run1, c_run2 = st.columns(2)
+        c_run1, c_run2, c_run3 = st.columns(3)
         with c_run1:
             preview_clicked = st.button(
                 "👀 Preview FI (no expert priors)",
@@ -2334,13 +2356,21 @@ def show():
             train_clicked = st.button(
                 "🚀 Train with Expert Priors",
                 use_container_width=True,
-                help="Train TEXGISA with the configured expert rules and λ_expert penalty to obtain final metrics.",
+                help="Train TEXGISA with the configured expert rules and λ_expert penalty (fast path without hazard playback).",
             )
+            st.caption("Fastest training path – skips per-epoch curve capture.")
             fast_expert = st.checkbox(
                 "Fast expert mode (lighter generator & TEXGISA importance)",
                 value=True,
                 help=_qhelp_md("fast_mode"),
             )
+        with c_run3:
+            train_with_playback_clicked = st.button(
+                "🎬 Train + Hazard Playback",
+                use_container_width=True,
+                help="Train TEXGISA and capture per-epoch hazard/survival curves for the playback widget (runs longer).",
+            )
+            st.caption("Captures per-epoch curves for visual playback. Expect longer runtimes.")
     else:
         run_clicked = st.button(
             f"🚀 Train {algo}",
@@ -2356,6 +2386,7 @@ def show():
                 cfg["lambda_expert"] = 0.0              # Disable expert penalty during the preview pass.
                 # Use a smaller epoch count for fast previews.
                 cfg["epochs"] = min(int(cfg.get("epochs", 200)), 50)
+                cfg["capture_training_curves"] = False
                 results = run_analysis(algo, df, cfg)
                 st.session_state["results"] = results
                 st.success("✅ FI preview done.")
@@ -2375,12 +2406,33 @@ def show():
                     cfg["ig_batch_samples"] = min(cfg.get("ig_batch_samples", 32), 24)
                     cfg["ig_time_subsample"] = min(cfg.get("ig_time_subsample", 8), 6)
 
+                cfg["capture_training_curves"] = False
+
                 # Execute the training run with the potentially adjusted configuration.
                 results = run_analysis(algo, df, cfg)
 
                 st.session_state["results"] = results
                 st.success("✅ Training completed.")
 
+            except Exception as e:
+                st.error(f"Run failed: {e}")
+
+    if train_with_playback_clicked:
+        with st.spinner("Training with hazard playback (captures per-epoch curves)..."):
+            try:
+                cfg = dict(config)
+
+                if fast_expert:
+                    cfg["gen_epochs"] = min(cfg.get("gen_epochs", 200), 40)
+                    cfg["ig_steps"] = min(cfg.get("ig_steps", 20), 10)
+                    cfg["ig_batch_samples"] = min(cfg.get("ig_batch_samples", 32), 24)
+                    cfg["ig_time_subsample"] = min(cfg.get("ig_time_subsample", 8), 6)
+
+                cfg["capture_training_curves"] = True
+
+                results = run_analysis(algo, df, cfg)
+                st.session_state["results"] = results
+                st.success("✅ Training completed with hazard playback enabled.")
             except Exception as e:
                 st.error(f"Run failed: {e}")
 
@@ -2401,8 +2453,10 @@ def show():
 
         curve_data = results.get("training_curve_history")
         if isinstance(curve_data, dict) and (curve_data.get("entries")):
-            st.subheader("🎬 Hazard / Survival 训练回放")
+            st.subheader("🎬 Hazard / Survival Training Playback")
             _render_training_curve_history(curve_data)
+        elif algo == "TEXGISA":
+            st.info("Run **Train + Hazard Playback** to capture per-epoch hazards and survival curves for this widget.")
 
         # Survival curves
         st.subheader("Charts")

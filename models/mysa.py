@@ -611,9 +611,9 @@ def texgi_time_series(
         else:
             T = f(X[:1]).shape[1]
 
-    # 选择本次要参与的时间 bin（随机/等间隔均可）
+    # Choose which time bins participate in this pass (random or evenly spaced)
     if t_sample is not None and t_sample > 0 and t_sample < T:
-        # 等间隔抽样更稳定
+        # Evenly spaced sampling tends to be more stable
         import math
         step = max(1, math.floor(T / t_sample))
         t_indices = list(range(0, T, step))[:t_sample]
@@ -632,7 +632,7 @@ def texgi_time_series(
         )
         phi_list.append(ig_t)
 
-    # [T', B, D] （如果抽样，T' < T）
+    # Resulting shape [T', B, D] (if subsampled, T' < T)
     phi = torch.stack(phi_list, dim=0)
     return phi
 
@@ -723,8 +723,8 @@ class MySATrainer:
         ig_steps: int = 20,
         latent_dim: int = 16,
         extreme_dim: int = 1,
-        ig_batch_samples: int = 64,                 # 每个 batch 里参与 TEXGI 的样本上限
-        ig_time_subsample: Optional[int] = None,    # 每个 batch 里参与 TEXGI 的时间 bin 数上限（None=全时间）
+        ig_batch_samples: int = 64,                 # Max samples per batch participating in TEXGI
+        ig_time_subsample: Optional[int] = None,    # Max time bins per batch for TEXGI (None = all bins)
         # Generator settings:
         gen_epochs: int = 200,
         gen_batch: int = 256,
@@ -812,7 +812,7 @@ class MySATrainer:
             return  # no expert penalty, generator not required
         if self.G is not None:
             return
-        # 若磁盘上已有已训好的生成器，直接加载（加速多次实验）
+        # If a trained generator already exists on disk, load it to accelerate repeat runs
         import os, torch
         ckpt_path = "mysa_G.pt"
         if os.path.exists(ckpt_path):
@@ -822,7 +822,7 @@ class MySATrainer:
                 self.G.load_state_dict(torch.load(ckpt_path, map_location=self.device))
                 return
             except Exception:
-                self.G = None  # 加载失败则正常重训
+                self.G = None  # Fall back to retraining if loading fails
 
         assert self.X_train_ref is not None, "X_train_ref must be provided to fit generator."
         Xtr = self.X_train_ref.to(self.device)
@@ -1592,6 +1592,8 @@ def _run_mysa_core(prepared: Dict[str, Any], config: Dict) -> Dict:
         modality_mask_ref=(torch.tensor(mask_tr, dtype=torch.float32) if mask_tr is not None else None),
     )
 
+    capture_curves = bool(config.get("capture_training_curves", False))
+
     curve_history: List[Dict[str, Any]] = []
     time_bins = list(range(1, int(prepared["num_bins"]) + 1))
     max_curve_samples = max(1, int(config.get("curve_samples", 5)))
@@ -1625,32 +1627,33 @@ def _run_mysa_core(prepared: Dict[str, Any], config: Dict) -> Dict:
     sample_labels: List[str] = []
     sample_meta: List[Dict[str, Any]] = []
 
-    try:
-        first_val_batch = next(iter(val_loader))
-    except StopIteration:
-        first_val_batch = None
+    if capture_curves:
+        try:
+            first_val_batch = next(iter(val_loader))
+        except StopIteration:
+            first_val_batch = None
 
-    if first_val_batch is not None:
-        X0, _, _, mask0 = trainer._unpack_batch(first_val_batch)
-        batch_size = _infer_batch_size(X0)
-        take = min(batch_size, max_curve_samples)
-        monitor_features = _slice_first_k(X0, take)
-        monitor_mask = _slice_first_k(mask0, take) if mask0 is not None else None
+        if first_val_batch is not None:
+            X0, _, _, mask0 = trainer._unpack_batch(first_val_batch)
+            batch_size = _infer_batch_size(X0)
+            take = min(batch_size, max_curve_samples)
+            monitor_features = _slice_first_k(X0, take)
+            monitor_mask = _slice_first_k(mask0, take) if mask0 is not None else None
 
-        dur_arr = prepared["dur_va"].detach().cpu().numpy() if torch.is_tensor(prepared["dur_va"]) else np.asarray(prepared["dur_va"])
-        evt_arr = prepared["evt_va"].detach().cpu().numpy() if torch.is_tensor(prepared["evt_va"]) else np.asarray(prepared["evt_va"])
+            dur_arr = prepared["dur_va"].detach().cpu().numpy() if torch.is_tensor(prepared["dur_va"]) else np.asarray(prepared["dur_va"])
+            evt_arr = prepared["evt_va"].detach().cpu().numpy() if torch.is_tensor(prepared["evt_va"]) else np.asarray(prepared["evt_va"])
 
-        for idx in range(take):
-            label = f"Val #{idx + 1}"
-            duration_val = float(dur_arr[idx]) if idx < len(dur_arr) else None
-            event_val = int(evt_arr[idx]) if idx < len(evt_arr) else None
-            if duration_val is not None and event_val is not None:
-                label = f"Val #{idx + 1} (T={duration_val:.0f}, E={event_val})"
-            sample_labels.append(label)
-            sample_meta.append({"duration": duration_val, "event": event_val})
+            for idx in range(take):
+                label = f"Val #{idx + 1}"
+                duration_val = float(dur_arr[idx]) if idx < len(dur_arr) else None
+                event_val = int(evt_arr[idx]) if idx < len(evt_arr) else None
+                if duration_val is not None and event_val is not None:
+                    label = f"Val #{idx + 1} (T={duration_val:.0f}, E={event_val})"
+                sample_labels.append(label)
+                sample_meta.append({"duration": duration_val, "event": event_val})
 
     def _capture_epoch_curves(epoch_idx: int, val_c: float, losses: Dict[str, float]):
-        if monitor_features is None:
+        if not capture_curves or monitor_features is None:
             return
         with torch.no_grad():
             trainer.model.eval()
@@ -1720,7 +1723,7 @@ def _run_mysa_core(prepared: Dict[str, Any], config: Dict) -> Dict:
     surv_df = pd.DataFrame(S_va.T)
     surv_df.index.name = "time_bin"
 
-    if curve_history:
+    if capture_curves and curve_history:
         curve_payload = {
             "time_bins": time_bins,
             "sample_ids": sample_labels,
