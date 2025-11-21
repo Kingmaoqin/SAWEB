@@ -953,10 +953,17 @@ def _render_training_curve_history(curve_data: Dict[str, Any]):
 
     fig.update_layout(
         height=560,
-        margin=dict(t=60, l=60, r=200, b=140),
+        margin=dict(l=20, r=20, t=50, b=170),
         hovermode="x unified",
         template="plotly_white",
-        legend=dict(orientation="v", y=1.0, x=1.02, yanchor="top", bgcolor="rgba(255,255,255,0.85)"),
+        legend=dict(
+            orientation="h",
+            yanchor="top",
+            y=-0.3,
+            xanchor="center",
+            x=0.5,
+            bgcolor="rgba(255,255,255,0.85)",
+        ),
         xaxis=dict(title="Time bin"),
         xaxis2=dict(title="Time bin"),
         yaxis=dict(title="Instantaneous hazard", range=[0, max(0.05, hazard_global_max * 1.1)]),
@@ -986,11 +993,15 @@ def _render_training_curve_history(curve_data: Dict[str, Any]):
         sliders=[
             {
                 "active": epoch_idx,
-                "pad": {"t": 50, "b": 20},
+                "pad": {"t": 60, "b": 10},
                 "len": 0.9,
                 "x": 0.05,
+                "y": -0.1,
                 "steps": slider_steps,
-                "currentvalue": {"prefix": "Epoch: ", "offset": 20},
+                "currentvalue": {
+                    "prefix": "Epoch: ",
+                    "offset": 20,
+                },
             }
         ],
     )
@@ -2345,6 +2356,7 @@ def show():
             )
 
     # ===================== 5) Run =============================================
+    show_animation = False
     preview_clicked = False
     train_clicked = False
     train_with_playback_clicked = False
@@ -2360,6 +2372,14 @@ def show():
         return cfg
 
     if algo == "TEXGISA":
+        show_animation = st.checkbox(
+            "Show animation during training (slower)",
+            value=True,
+            help=(
+                "Update the hazard/survival playback chart during training. Disable to capture only the final epoch "
+                "for faster runs without per-epoch UI redraws."
+            ),
+        )
         c_run1, c_run2, c_run3 = st.columns(3)
         with c_run1:
             preview_clicked = st.button(
@@ -2402,8 +2422,14 @@ def show():
                 # Use a smaller epoch count for fast previews.
                 cfg["epochs"] = min(int(cfg.get("epochs", 200)), 50)
                 cfg["capture_training_curves"] = False
+                cfg["enable_animation"] = bool(show_animation)
+                cfg["progress_bar"] = st.progress(0.0)
                 cfg = _enforce_epoch_caps(cfg)
                 results = run_analysis(algo, df, cfg)
+                try:
+                    cfg["progress_bar"].progress(1.0)
+                except Exception:
+                    pass
                 st.session_state["results"] = results
                 st.success("✅ FI preview done.")
             except Exception as e:
@@ -2423,10 +2449,16 @@ def show():
                     cfg["ig_time_subsample"] = min(cfg.get("ig_time_subsample", 8), 6)
 
                 cfg["capture_training_curves"] = False
+                cfg["enable_animation"] = bool(show_animation)
+                cfg["progress_bar"] = st.progress(0.0)
                 cfg = _enforce_epoch_caps(cfg)
 
                 # Execute the training run with the potentially adjusted configuration.
                 results = run_analysis(algo, df, cfg)
+                try:
+                    cfg["progress_bar"].progress(1.0)
+                except Exception:
+                    pass
 
                 st.session_state["results"] = results
                 st.success("✅ Training completed.")
@@ -2446,9 +2478,15 @@ def show():
                     cfg["ig_time_subsample"] = min(cfg.get("ig_time_subsample", 8), 6)
 
                 cfg["capture_training_curves"] = True
+                cfg["enable_animation"] = bool(show_animation)
+                cfg["progress_bar"] = st.progress(0.0)
                 cfg = _enforce_epoch_caps(cfg)
 
                 results = run_analysis(algo, df, cfg)
+                try:
+                    cfg["progress_bar"].progress(1.0)
+                except Exception:
+                    pass
                 st.session_state["results"] = results
                 st.success("✅ Training completed with hazard playback enabled.")
             except Exception as e:

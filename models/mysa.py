@@ -27,6 +27,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
+import time
 
 # ---- robust import guard (optional hardening) ----
 import os, sys, importlib.util, pathlib
@@ -1601,10 +1602,24 @@ def _run_mysa_core(prepared: Dict[str, Any], config: Dict) -> Dict:
     )
 
     capture_curves = bool(config.get("capture_training_curves", False))
+    enable_animation = bool(config.get("enable_animation", False))
+    animation_sleep = float(config.get("animation_sleep", 0.1))
+    progress_bar = config.get("progress_bar")
 
     curve_history: List[Dict[str, Any]] = []
     time_bins = list(range(1, int(prepared["num_bins"]) + 1))
     max_curve_samples = max(1, int(config.get("curve_samples", 5)))
+
+    def _update_progress(fraction: float) -> None:
+        if progress_bar is None:
+            return
+        try:
+            # Clamp to [0, 1] to satisfy Streamlit progress bars.
+            frac = max(0.0, min(1.0, float(fraction)))
+            progress_bar.progress(frac)
+        except Exception:
+            # Fallback silently if a non-Streamlit object is supplied.
+            pass
 
     def _infer_batch_size(batch_x: Any) -> int:
         if batch_x is None:
@@ -1690,6 +1705,7 @@ def _run_mysa_core(prepared: Dict[str, Any], config: Dict) -> Dict:
 
     best = {"val_cindex": 0.0, "epoch": -1}
     epochs = int(config.get("epochs", 200))
+    _update_progress(0.0)
     for ep in range(1, epochs + 1):
         lm = ls = le = 0.0
         steps = 0
@@ -1705,7 +1721,12 @@ def _run_mysa_core(prepared: Dict[str, Any], config: Dict) -> Dict:
         le /= steps
 
         val_c = trainer.evaluate_cindex(val_loader, dur_va, evt_va)
-        _capture_epoch_curves(ep, val_c, {"nll": lm, "smooth": ls, "expert": le})
+        if capture_curves:
+            should_capture = enable_animation or (ep == epochs)
+            if should_capture:
+                _capture_epoch_curves(ep, val_c, {"nll": lm, "smooth": ls, "expert": le})
+                if enable_animation and animation_sleep > 0:
+                    time.sleep(animation_sleep)
         trainer.sched.step(1.0 - val_c)
 
         if val_c > best["val_cindex"]:
@@ -1715,6 +1736,9 @@ def _run_mysa_core(prepared: Dict[str, Any], config: Dict) -> Dict:
         print(
             f"[MySA] Ep{ep:03d}  NLL={lm:.4f}  Smooth={ls:.4f}  Expert={le:.4f}  | Val C-index={val_c:.4f}"
         )
+        _update_progress(ep / epochs)
+
+    _update_progress(1.0)
 
     device = trainer.device
     model.eval()
