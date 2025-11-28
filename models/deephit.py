@@ -138,6 +138,9 @@ def run_deephit(data, config):
         "C-index (Test)": c_index_test,
         "Integrated Brier Score": integrated_brier_score,
         "Integrated Negative Log-Likelihood": integrated_nbll,
-        "Surv_Test": surv_test
+        "Surv_Test": surv_test,
+        # Preserve aligned test features for downstream CF exploration.
+        "cf_features": X_test.reset_index(drop=True),
+        "cf_feature_names": list(X.columns),
     }
 

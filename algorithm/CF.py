@@ -32,6 +32,90 @@ def _target_cumhaz(cumhaz: float, horizon: int, desired_extension: float) -> flo
     return max(cumhaz * scale, 0.0)
 
 
+def _standardize_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Z-score features to balance units for distance-based search."""
+
+    numeric = df.select_dtypes(include=[np.number])
+    standardized = (numeric - numeric.mean()) / numeric.std(ddof=0)
+    standardized = standardized.replace([np.inf, -np.inf], 0.0).fillna(0.0)
+    return standardized
+
+
+def _feature_change_suggestions(
+    feature_df: pd.DataFrame,
+    risks: np.ndarray,
+    patient_indices: Sequence[int],
+    suggestions_per_patient: int,
+) -> Dict[int, Sequence[Dict[str, Any]]]:
+    """Propose feature deltas by referencing lower-risk neighbours.
+
+    For each patient, locate up to `suggestions_per_patient` nearest neighbours with
+    strictly lower risk and translate the differences into actionable deltas.
+    """
+
+    if feature_df is None or feature_df.empty:
+        return {}
+
+    feature_df = feature_df.reset_index(drop=True)
+    standardized = _standardize_features(feature_df)
+    feature_names = list(feature_df.columns)
+    risk_arr = risks.astype(float)
+    suggestions: Dict[int, Sequence[Dict[str, Any]]] = {}
+
+    for idx in patient_indices:
+        if idx >= len(feature_df) or idx < 0:
+            continue
+
+        target_risk = risk_arr[idx] if idx < risk_arr.size else risk_arr.mean()
+        base_vec = standardized.iloc[idx].to_numpy(dtype=float)
+
+        lower_mask = risk_arr < target_risk
+        lower_mask[idx] = False
+        if not lower_mask.any():
+            candidates = np.argsort(risk_arr)
+        else:
+            candidates = np.where(lower_mask)[0]
+
+        neighbor_vecs = standardized.iloc[candidates].to_numpy(dtype=float)
+        if neighbor_vecs.size == 0:
+            continue
+
+        dists = np.linalg.norm(neighbor_vecs - base_vec, axis=1)
+        order = np.argsort(dists)
+        picked = [int(candidates[o]) for o in order[: max(1, suggestions_per_patient)]]
+
+        patient_suggestions = []
+        for rank, neighbor_idx in enumerate(picked, start=1):
+            neighbor_raw = feature_df.iloc[neighbor_idx]
+            diff = neighbor_raw - feature_df.iloc[idx]
+            non_zero = diff.replace(0.0, np.nan).dropna()
+            if non_zero.empty:
+                text = "已找到风险更低的相似病例；保持当前方案并加强随访。"
+            else:
+                top_feats = non_zero.abs().sort_values(ascending=False).head(3)
+                parts = []
+                for feat, delta in top_feats.items():
+                    new_val = feature_df.loc[idx, feat] + delta
+                    direction = "降低" if delta < 0 else "提高"
+                    parts.append(f"将 {feat} {direction}到 {new_val:.3f} (Δ {delta:+.3f})")
+                text = "；".join(parts)
+
+            patient_suggestions.append(
+                {
+                    "sample_id": idx,
+                    "suggestion_rank": rank,
+                    "reference_id": neighbor_idx,
+                    "current_risk": float(target_risk),
+                    "reference_risk": float(risk_arr[neighbor_idx] if neighbor_idx < risk_arr.size else target_risk),
+                    "suggested_changes": text,
+                }
+            )
+
+        suggestions[idx] = patient_suggestions
+
+    return suggestions
+
+
 def _binary_scale_search(
     haz_row: np.ndarray, target_ch: float, interval: Optional[int] = None
 ) -> np.ndarray:
@@ -116,6 +200,8 @@ def generate_cf_from_arrays(
     save_path: Optional[str] = None,
     patient_indices: Optional[Sequence[int]] = None,
     desired_extension: float = 1.0,
+    feature_df: Optional[pd.DataFrame] = None,
+    suggestions_per_patient: int = 1,
     use_genetic_backup: bool = True,
 ) -> CFResult:
     """Create post-hoc counterfactual suggestions from hazards.
@@ -148,6 +234,13 @@ def generate_cf_from_arrays(
     target_vals, interval_idx = _select_interval(haz, interval)
     horizon = haz.shape[1]
 
+    feature_cf = _feature_change_suggestions(
+        feature_df=feature_df,
+        risks=risks,
+        patient_indices=idx_subset,
+        suggestions_per_patient=max(1, suggestions_per_patient),
+    )
+
     suggestions = []
     for i in idx_subset:
         base_row = haz[i].copy()
@@ -170,25 +263,40 @@ def generate_cf_from_arrays(
             top_features = f" 优先关注: {feats}."
 
         t_int = int(interval_idx[i] + 1)
-        suggestions.append(
+        feature_rec_list = feature_cf.get(i) or [
             {
-                "sample_id": i,
-                "target_interval": t_int,
-                "current_cumhaz": base_ch,
-                "target_cumhaz": target_ch,
-                "achieved_cumhaz": achieved_ch,
-                "hazard_reduction": hazard_delta,
-                "estimated_extension": achieved_extension,
-                "desired_extension": desired_extension,
-                "risk_score": base_risk,
-                "action": (
-                    f"期望延长生存约 {desired_extension:.1f} 个时间单位；"
-                    f"在区间 {t_int} 处收紧危险度，可将累计风险由 {base_ch:.3f} 下调到 {achieved_ch:.3f}。"
-                    "可尝试加强随访频率、监测症状和依从性管理，若仍不足则考虑多因素联合干预。"
-                    + top_features
-                ),
+                "suggestion_rank": 1,
+                "reference_id": None,
+                "current_risk": base_risk,
+                "reference_risk": base_risk,
+                "suggested_changes": "未找到更低风险的相似样本，建议结合医生经验制定个性化方案。",
             }
-        )
+        ]
+
+        for rec in feature_rec_list:
+            suggestions.append(
+                {
+                    "sample_id": i,
+                    "target_interval": t_int,
+                    "current_cumhaz": base_ch,
+                    "target_cumhaz": target_ch,
+                    "achieved_cumhaz": achieved_ch,
+                    "hazard_reduction": hazard_delta,
+                    "estimated_extension": achieved_extension,
+                    "desired_extension": desired_extension,
+                    "risk_score": base_risk,
+                    "suggestion_rank": rec.get("suggestion_rank"),
+                    "reference_id": rec.get("reference_id"),
+                    "reference_risk": rec.get("reference_risk"),
+                    "suggested_changes": rec.get("suggested_changes", ""),
+                    "action": (
+                        f"期望延长生存约 {desired_extension:.1f} 个时间单位；"
+                        f"在区间 {t_int} 处收紧危险度，可将累计风险由 {base_ch:.3f} 下调到 {achieved_ch:.3f}。"
+                        "可尝试加强随访频率、监测症状和依从性管理，若仍不足则考虑多因素联合干预。"
+                        + top_features
+                    ),
+                }
+            )
 
     cf_table = pd.DataFrame(suggestions)
     summary = {
@@ -196,6 +304,7 @@ def generate_cf_from_arrays(
         "mean_risk": float(np.mean([s.get("risk_score", 0.0) for s in suggestions])) if suggestions else 0.0,
         "mean_target_hazard": float(np.mean(target_vals)) if len(target_vals) else 0.0,
         "mean_achieved_extension": float(np.mean([s.get("estimated_extension", 0.0) for s in suggestions])) if suggestions else 0.0,
+        "avg_feature_references": float(np.mean([s.get("reference_risk", 0.0) for s in suggestions])) if suggestions else 0.0,
     }
 
     if save_path:
