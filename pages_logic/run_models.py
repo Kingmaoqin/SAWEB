@@ -18,6 +18,7 @@ from plotly.subplots import make_subplots
 from plotly.colors import qualitative as pq
 
 from algorithm.CF import generate_cf_from_arrays
+from algorithm.texgi_cf import generate_texgi_counterfactuals
 
 from models import coxtime, deepsurv, deephit
 from models.mysa import run_mysa as run_texgisa
@@ -627,11 +628,110 @@ def _render_risk_guidance(results: dict):
     )
 
 
+def _render_texgi_cf_block(results: dict):
+    st.subheader("🧭 TEXGI counterfactuals (per patient)")
+    cf_spec = results.get("cf_model_spec")
+    feature_df = results.get("cf_features")
+    hazards = results.get("hazards")
+    stats = results.get("cf_feature_stats")
+
+    if cf_spec is None or feature_df is None:
+        st.info("Run TEXGISA with feature captures to enable patient-level counterfactuals.")
+        return
+
+    n_samples = len(feature_df)
+    if n_samples == 0:
+        st.info("No validation samples available for counterfactual generation.")
+        return
+
+    st.caption(
+        "Gradient-based TEXGI CFs adjust a single patient's features within cohort bounds "
+        "to hit a safer cumulative hazard level. Changes are suggested along the strongest "
+        "TEXGI directions, not generic hazard scaling."
+    )
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        patient_idx = st.number_input(
+            "Patient index (validation set)",
+            min_value=0,
+            max_value=max(0, n_samples - 1),
+            value=0,
+            step=1,
+        )
+    with c2:
+        desired_extension = st.number_input(
+            "Desired survival gain (intervals)",
+            min_value=0.0,
+            value=1.0,
+            step=0.5,
+            help="Higher values demand larger hazard reductions during optimisation.",
+        )
+    with c3:
+        top_k = st.slider("Max feature edits to show", min_value=1, max_value=5, value=3, step=1)
+
+    c4, c5 = st.columns(2)
+    with c4:
+        steps = st.slider("Gradient steps", min_value=60, max_value=320, value=160, step=20)
+    with c5:
+        lr = st.slider(
+            "Step size (learning rate)", min_value=0.005, max_value=0.2, value=0.05, step=0.005
+        )
+
+    locked = st.multiselect(
+        "Lock features (do not change)",
+        options=list(feature_df.columns),
+        help="Select any variables that should remain fixed while searching for safer counterfactuals.",
+    )
+
+    placeholder = st.empty()
+    if st.button("Generate TEXGI counterfactual", use_container_width=True):
+        with st.spinner("Optimising patient-specific TEXGI counterfactual..."):
+            cf_res = generate_texgi_counterfactuals(
+                cf_spec,
+                feature_df,
+                hazards=hazards,
+                feature_stats=stats,
+                patient_indices=[int(patient_idx)],
+                desired_extension=float(desired_extension),
+                steps=int(steps),
+                lr=float(lr),
+                top_k=int(top_k),
+                immutable_features=locked,
+            )
+        if cf_res.table.empty:
+            placeholder.warning("No actionable feature deltas found for the selected patient.")
+            return
+
+        placeholder.success(
+            f"Target cumulative hazard ≈ {cf_res.summary.get('mean_target_cumhaz', 0.0):.3f}; "
+            f"achieved ≈ {cf_res.summary.get('mean_achieved_cumhaz', 0.0):.3f}."
+        )
+        st.dataframe(cf_res.table, use_container_width=True)
+
+        csv = cf_res.table.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            "📥 Download TEXGI CF (CSV)",
+            data=csv,
+            file_name="texgi_counterfactuals.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+
+        st.caption(
+            "TEXGI counterfactuals use the trained TEXGISA model, cohort min/max bounds, "
+            "and gradient descent to propose concrete feature changes for the chosen patient."
+        )
+
+
 def _render_cf_block(results: dict):
+    if results.get("algo", "").lower() in {"texgisa", "mysa"} or results.get("cf_model_spec") is not None:
+        return _render_texgi_cf_block(results)
     st.subheader("🧭 Counterfactual (CF) simulator")
     results = _attach_risk_summary(results)
     hazards = results.get("hazards")
     risk_scores = results.get("risk_scores")
+    feature_df = results.get("cf_features")
 
     if hazards is None and risk_scores is None:
         st.info("Train or load a model to capture hazards/risk scores before generating CF suggestions.")
@@ -652,11 +752,24 @@ def _render_cf_block(results: dict):
         st.info("No samples available for CF generation; please complete an inference or evaluation first.")
         return
 
+    cf_mode = st.radio(
+        "Counterfactual mode",
+        ["Single patient feature changes", "Batch / whole cohort"],
+        help="选择为单个病人生成多条特征级别建议，或为所有病人批量生成基于区间的建议。",
+        horizontal=True,
+    )
     patient_choice = st.number_input("Select patient index", min_value=0, max_value=max(0, n_samples - 1), value=0, step=1)
-    batch_mode = st.checkbox("Generate for all patients (Batch Mode - may take longer)", value=False)
+    batch_mode = cf_mode == "Batch / whole cohort"
     if batch_mode:
         st.warning("Batch mode iterates through all samples to search. This may be time-consuming; please be patient.")
     desired_extension = st.number_input("Desired survival time extension (time units/intervals)", min_value=0.0, value=1.0, step=0.5)
+    suggestions_per_patient = 1 if batch_mode else st.slider(
+        "Suggestions per patient",
+        min_value=1,
+        max_value=5,
+        value=5,
+        help="为该病人提供最多5条可操作特征调整建议。",
+    )
 
     placeholder = st.empty()
     if st.button("Generate CF suggestions", use_container_width=True):
@@ -667,6 +780,8 @@ def _render_cf_block(results: dict):
                 interval=interval,
                 patient_indices=(list(range(n_samples)) if batch_mode else [int(patient_choice)]),
                 desired_extension=float(desired_extension),
+                feature_df=feature_df,
+                suggestions_per_patient=int(suggestions_per_patient),
             )
         placeholder.success(f"Mean target hazard: {cf_result.summary['mean_target_hazard']:.3f}; mean risk: {cf_result.summary['mean_risk']:.3f}.")
         st.dataframe(cf_result.table, use_container_width=True)
@@ -680,9 +795,9 @@ def _render_cf_block(results: dict):
                 use_container_width=True,
             )
         st.caption(
-            "The CF search attempts to reduce hazard to meet the survival extension goal, prioritizing deterministic scaling. "
-            "If constraints are not met, it automatically switches to a Genetic Algorithm for fallback search. "
-            "Default simulation is for a single patient; batch mode is provided for offline exploration. Please evaluate combined with risk scores and C-index."
+            "特征级别CF会为单个病人给出最多5条可操作建议（来源于低风险近邻），批量模式则为每个病人生成1条区间层面的对策。"
+            "基础算法仍会先通过确定性缩放降低危险度，若受限则自动切换遗传算法兜底。"
+            "请结合风险分数与C-index共同解读，并与临床经验核对后再使用。"
         )
 HAS_MYSA = True
 

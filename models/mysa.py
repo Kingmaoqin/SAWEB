@@ -1008,6 +1008,17 @@ def _prepare_tabular_inputs(data: pd.DataFrame, config: Dict) -> Dict[str, Any]:
     intervals = df["interval_number"].to_numpy(np.int32)
     X_all = df[feat_cols].to_numpy(np.float32)
 
+    feature_stats = pd.DataFrame(
+        {
+            "feature": feat_cols,
+            "min": X_all.min(axis=0),
+            "max": X_all.max(axis=0),
+            "mean": X_all.mean(axis=0),
+            "std": X_all.std(axis=0) + 1e-6,
+            "median": np.median(X_all, axis=0),
+        }
+    )
+
     X_tr = X_all[tr]
     X_va = X_all[va]
     y_tr, m_tr = build_supervision(intervals[tr], events[tr], num_bins)
@@ -1046,6 +1057,7 @@ def _prepare_tabular_inputs(data: pd.DataFrame, config: Dict) -> Dict[str, Any]:
         "mask_train": None,
         "mask_val": None,
         "dropped_feature_columns": dropped_cols,
+        "feature_stats": feature_stats,
     }
 
 
@@ -1790,7 +1802,22 @@ def _run_mysa_core(prepared: Dict[str, Any], config: Dict) -> Dict:
 
     torch.save({"phi_val": phi_val.detach().cpu(), "feature_names": feature_names}, "mysa_phi_val.pt")
 
+    cf_model_spec = {
+        "model_type": "tabular",
+        "input_dim": int(prepared["X_val"].shape[1]),
+        "num_bins": int(prepared["num_bins"]),
+        "hidden": int(config.get("hidden", 256)),
+        "depth": int(config.get("depth", 2)),
+        "dropout": float(config.get("dropout", 0.2)),
+        "state_path": "model.pt",
+        "feature_names": feature_names,
+    }
+
+    risk_scores = H_va.sum(axis=1)
+    cf_features = pd.DataFrame(prepared["X_val"], columns=feature_names)
+
     return {
+        "algo": "TEXGISA",
         "C-index (Validation)": float(best["val_cindex"]),
         "Num Bins": int(prepared["num_bins"]),
         "Val Samples": int(len(X_va)),
@@ -1800,6 +1827,11 @@ def _run_mysa_core(prepared: Dict[str, Any], config: Dict) -> Dict:
         "Expert Rules Used": expert_rules or {},
         "Best Epoch": int(best["epoch"]),
         "Phi_Val_Path": "mysa_phi_val.pt",
+        "hazards": H_va,
+        "risk_scores": risk_scores.tolist(),
+        "cf_features": cf_features,
+        "cf_feature_stats": prepared.get("feature_stats"),
+        "cf_model_spec": cf_model_spec,
     }
 
 
