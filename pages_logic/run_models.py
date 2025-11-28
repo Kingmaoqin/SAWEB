@@ -678,6 +678,12 @@ def _render_texgi_cf_block(results: dict):
             "Step size (learning rate)", min_value=0.005, max_value=0.2, value=0.05, step=0.005
         )
 
+    locked = st.multiselect(
+        "Lock features (do not change)",
+        options=list(feature_df.columns),
+        help="Select any variables that should remain fixed while searching for safer counterfactuals.",
+    )
+
     placeholder = st.empty()
     if st.button("Generate TEXGI counterfactual", use_container_width=True):
         with st.spinner("Optimising patient-specific TEXGI counterfactual..."):
@@ -691,6 +697,7 @@ def _render_texgi_cf_block(results: dict):
                 steps=int(steps),
                 lr=float(lr),
                 top_k=int(top_k),
+                immutable_features=locked,
             )
         if cf_res.table.empty:
             placeholder.warning("No actionable feature deltas found for the selected patient.")

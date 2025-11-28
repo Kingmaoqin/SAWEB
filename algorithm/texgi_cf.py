@@ -70,7 +70,11 @@ def _optimize_single(
     steps: int = 160,
     lr: float = 0.05,
     l2_weight: float = 0.01,
+    frozen_mask: Optional[torch.Tensor] = None,
 ):
+    base = base.clone().detach()
+    with torch.no_grad():
+        base.clamp_(bounds_min, bounds_max)
     x = base.clone().detach().requires_grad_(True)
     optimizer = torch.optim.Adam([x], lr=lr)
 
@@ -90,10 +94,14 @@ def _optimize_single(
         optimizer.step()
         with torch.no_grad():
             x.clamp_(bounds_min, bounds_max)
-            if ch.item() < best_ch:
-                best_ch = ch.item()
+            if frozen_mask is not None and frozen_mask.any():
+                x[..., frozen_mask] = base[..., frozen_mask]
+
+            ch_post = model(x).sum()
+            if ch_post.item() < best_ch:
+                best_ch = ch_post.item()
                 best = x.clone().detach()
-            if ch.item() <= target_ch * 1.02:
+            if ch_post.item() <= target_ch * 1.02:
                 break
 
     with torch.no_grad():
@@ -112,6 +120,7 @@ def generate_texgi_counterfactuals(
     steps: int = 160,
     lr: float = 0.05,
     top_k: int = 3,
+    immutable_features: Optional[Sequence[str]] = None,
 ) -> TexgiCFResult:
     """Generate per-patient counterfactuals with TEXGI gradients.
 
@@ -131,6 +140,9 @@ def generate_texgi_counterfactuals(
     stats_df = _stats_frame(feature_stats, feature_names)
     bounds_min = torch.tensor(stats_df.get("min", pd.Series(0, index=feature_names)).to_numpy(), dtype=torch.float32)
     bounds_max = torch.tensor(stats_df.get("max", pd.Series(0, index=feature_names)).to_numpy(), dtype=torch.float32)
+
+    immutable_features = set(immutable_features or [])
+    frozen_mask = torch.tensor([name in immutable_features for name in feature_names], dtype=torch.bool)
 
     model = _load_model(model_spec)
     num_bins = int(model_spec.get("num_bins", model.hazard_layer.out_features))
@@ -155,6 +167,7 @@ def generate_texgi_counterfactuals(
             target_ch,
             steps=steps,
             lr=lr,
+            frozen_mask=frozen_mask,
         )
 
         delta = (best_vec - base_vec).squeeze(0).detach().cpu().numpy()
@@ -163,6 +176,8 @@ def generate_texgi_counterfactuals(
         order = np.argsort(np.abs(delta))[::-1]
 
         for rank, feat_idx in enumerate(order[: max(1, top_k)], start=1):
+            if frozen_mask[feat_idx]:
+                continue
             if np.isclose(delta[feat_idx], 0.0):
                 continue
             feat_name = feature_names[feat_idx]
@@ -184,6 +199,7 @@ def generate_texgi_counterfactuals(
     table = pd.DataFrame(suggestions)
     summary = {
         "desired_extension": desired_extension,
+        "mean_current_cumhaz": float(table["current_cumhaz"].mean()) if not table.empty else 0.0,
         "mean_target_cumhaz": float(table["target_cumhaz"].mean()) if not table.empty else 0.0,
         "mean_achieved_cumhaz": float(table["achieved_cumhaz"].mean()) if not table.empty else 0.0,
     }
