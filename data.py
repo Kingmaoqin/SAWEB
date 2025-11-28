@@ -137,3 +137,20 @@ def create_dataloaders(
         num_workers=num_workers, pin_memory=pin_memory, persistent_workers=use_persistent
     )
     return train_loader, val_loader
+
+
+def export_dataset_arrays(loader: DataLoader):
+    """Collect tensors from a data loader for CF/analysis utilities."""
+
+    xs, ys, ms = [], [], []
+    for X, y, m in loader:
+        xs.append(X.cpu())
+        ys.append(y.cpu())
+        ms.append(m.cpu())
+    if not xs:
+        return None
+    return {
+        "x": torch.cat(xs, dim=0),
+        "y": torch.cat(ys, dim=0),
+        "m": torch.cat(ms, dim=0),
+    }

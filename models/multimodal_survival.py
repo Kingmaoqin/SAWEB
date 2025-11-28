@@ -68,3 +68,13 @@ class MultiModalSurvivalModel(nn.Module):
 
         hazards = torch.sigmoid(self.hazard_layer(fused))
         return hazards
+
+    @torch.no_grad()
+    def predict_risk(self, inputs: Dict[str, torch.Tensor], modality_masks: Optional[torch.Tensor] = None, interval: int | None = None) -> torch.Tensor:
+        """Return per-sample risk scores or interval hazards for CF/UX layers."""
+
+        hazards = self.forward(inputs, modality_masks)
+        if interval is not None:
+            idx = max(0, min(int(interval) - 1, hazards.shape[1] - 1))
+            return hazards[:, idx]
+        return hazards.sum(dim=1)
