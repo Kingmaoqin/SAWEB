@@ -160,7 +160,7 @@ def run_coxtime(data, config):
     c_index_test = ev_test.concordance_td()
     integrated_brier_score = ev_test.integrated_brier_score(time_grid)
     integrated_nbll = ev_test.integrated_nbll(time_grid)
-    
+
     return {
         "Partial Log Likelihood": partial_ll,
         "C-index (Train)": c_index_train,
@@ -168,6 +168,9 @@ def run_coxtime(data, config):
         "C-index (Test)": c_index_test,
         "Integrated Brier Score": integrated_brier_score,
         "Integrated Negative Log-Likelihood": integrated_nbll,
-        "Surv_Test": surv_test
+        "Surv_Test": surv_test,
+        # Preserve aligned test features for downstream CF exploration.
+        "cf_features": X_test.reset_index(drop=True),
+        "cf_feature_names": list(X.columns),
     }
 
