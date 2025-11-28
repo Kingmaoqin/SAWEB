@@ -649,18 +649,18 @@ def _render_cf_block(results: dict):
         interval = st.number_input("Interval (1-indexed)", min_value=1, value=1, step=1)
 
     if n_samples <= 0:
-        st.info("暂无可用于 CF 的样本；请先完成一次推理或评估。")
+        st.info("No samples available for CF generation; please complete an inference or evaluation first.")
         return
 
-    patient_choice = st.number_input("选择要研究的患者索引", min_value=0, max_value=max(0, n_samples - 1), value=0, step=1)
-    batch_mode = st.checkbox("批量为所有患者生成（可能耗时较长）", value=False)
+    patient_choice = st.number_input("Select patient index", min_value=0, max_value=max(0, n_samples - 1), value=0, step=1)
+    batch_mode = st.checkbox("Generate for all patients (Batch Mode - may take longer)", value=False)
     if batch_mode:
-        st.warning("批量模式会遍历所有样本并进行搜索，可能耗时，请耐心等待。")
-    desired_extension = st.number_input("期望额外生存时间（时间单位/区间）", min_value=0.0, value=1.0, step=0.5)
+        st.warning("Batch mode iterates through all samples to search. This may be time-consuming; please be patient.")
+    desired_extension = st.number_input("Desired survival time extension (time units/intervals)", min_value=0.0, value=1.0, step=0.5)
 
     placeholder = st.empty()
     if st.button("Generate CF suggestions", use_container_width=True):
-        with st.spinner("Simulating counterfactual recommendations (含确定性搜索与遗传算法备份)..."):
+        with st.spinner("Simulating counterfactual recommendations (using deterministic search with genetic algorithm backup)..."):
             cf_result = generate_cf_from_arrays(
                 hazards if hazards is not None else np.asarray(risk_scores)[:, None],
                 risk_scores=risk_scores,
@@ -680,8 +680,9 @@ def _render_cf_block(results: dict):
                 use_container_width=True,
             )
         st.caption(
-            "CF 搜索将尝试按照期望的生存延长目标收缩危险度，优先使用确定性缩放；若无法满足约束则自动切换到遗传算法进行备选搜索。"
-            "默认仅对单个患者进行模拟，并提供批量模式（耗时）以便离线探索。请结合风险分值与 C-index 综合评估效果。"
+            "The CF search attempts to reduce hazard to meet the survival extension goal, prioritizing deterministic scaling. "
+            "If constraints are not met, it automatically switches to a Genetic Algorithm for fallback search. "
+            "Default simulation is for a single patient; batch mode is provided for offline exploration. Please evaluate combined with risk scores and C-index."
         )
 HAS_MYSA = True
 
