@@ -8,6 +8,12 @@ from typing import Optional, Dict, Any
 
 from metrics import cindex_fast
 
+try:
+    from algorithm.CF import generate_cf_from_arrays
+except Exception:
+    # CF is optional during training; guarded import keeps core loop lightweight
+    generate_cf_from_arrays = None
+
 __all__ = ["masked_bce_nll", "smooth_l1_temporal", "Trainer"]
 
 def masked_bce_nll(hazards, labels, masks):
@@ -102,6 +108,7 @@ class Trainer:
     def evaluate(self, loader, durations, events):
         self.model.eval()
         all_risk = []
+        all_hazards = []
         for batch in loader:
             if isinstance(batch, (list, tuple)) and not hasattr(batch, "_fields"):
                 X, _, _, mod_mask = batch
@@ -114,13 +121,37 @@ class Trainer:
             hazards  = self.model(X, mod_mask)               # [B, T]
             risk     = hazards.sum(dim=1)                    # [B]
             all_risk.append(risk.cpu())
+            all_hazards.append(hazards.detach().cpu())
 
+        hazards_all = torch.cat(all_hazards, dim=0)
         risks = torch.cat(all_risk, dim=0)
         c = cindex_fast(durations, events, risks)
-        return c.item()
+        return {
+            "c_index": c.item(),
+            "risk_scores": risks,
+            "hazards": hazards_all,
+        }
 
-    def fit(self, train_loader, val_loader, val_durations, val_events, epochs=50):
-        best = {"val_cindex": 0.0, "epoch": -1}
+    def _save_eval_results(self, eval_out: Dict[str, Any], durations, events, path: str = "evaluation_results.json"):
+        risk_tensor = torch.as_tensor(eval_out.get("risk_scores", []), dtype=torch.float32)
+        payload = {
+            "c_index": float(eval_out.get("c_index", 0.0)),
+            "mean_risk_score": float(risk_tensor.mean().item()) if risk_tensor.numel() else 0.0,
+            "median_risk_score": float(risk_tensor.median().item()) if risk_tensor.numel() else 0.0,
+            "risk_scores": risk_tensor.flatten().tolist(),
+            "hazards": torch.as_tensor(eval_out.get("hazards", [])).tolist(),
+            "durations": torch.as_tensor(durations).flatten().tolist(),
+            "events": torch.as_tensor(events).flatten().tolist(),
+        }
+        import json
+
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        return path
+
+    def fit(self, train_loader, val_loader, val_durations, val_events, epochs=50, generate_cf: bool = False, cf_interval: Optional[int] = None, cf_save_path: str = "cf_results.csv"):
+        best = {"val_cindex": 0.0, "epoch": -1, "eval_path": None}
+        best_eval = None
         for ep in range(1, epochs + 1):
             self.model.train()
             loss_m, loss_s, steps = 0.0, 0.0, 0
@@ -130,13 +161,32 @@ class Trainer:
             loss_m /= max(steps, 1); loss_s /= max(steps, 1)
 
             # Validation
-            val_c = self.evaluate(val_loader, val_durations, val_events)
+            val_eval = self.evaluate(val_loader, val_durations, val_events)
+            val_c = val_eval["c_index"]
             val_loss_proxy = 1.0 - val_c  # for plateau scheduler
             self.sched.step(val_loss_proxy)
 
-            print(f"Epoch {ep:03d} | train_nll={loss_m:.4f} + smooth={loss_s:.4f} | val_cindex={val_c:.4f}")
+            print(
+                f"Epoch {ep:03d} | train_nll={loss_m:.4f} + smooth={loss_s:.4f} | "
+                f"val_cindex={val_c:.4f} | mean_risk={float(val_eval['risk_scores'].mean()):.4f}"
+            )
 
             if val_c > best["val_cindex"]:
                 best = {"val_cindex": val_c, "epoch": ep}
+                best_eval = val_eval
                 torch.save(self.model.state_dict(), "model.pt")
+                best["eval_path"] = self._save_eval_results(val_eval, val_durations, val_events)
         print(f"Best val C-index={best['val_cindex']:.4f} @ epoch {best['epoch']}")
+
+        # Optional: trigger CF simulation once the model checkpoint exists
+        if generate_cf and generate_cf_from_arrays is not None:
+            if best.get("eval_path") and best_eval is not None:
+                cf_out = generate_cf_from_arrays(
+                    hazards=best_eval.get("hazards"),
+                    risk_scores=best_eval.get("risk_scores"),
+                    interval=cf_interval,
+                    save_path=cf_save_path,
+                )
+                print(f"[CF] Counterfactual suggestions saved to {cf_out.get('save_path', cf_save_path)}")
+            else:
+                print("[CF] Skipped CF generation because no evaluation results were stored.")

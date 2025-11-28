@@ -17,6 +17,8 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from plotly.colors import qualitative as pq
 
+from algorithm.CF import generate_cf_from_arrays
+
 from models import coxtime, deepsurv, deephit
 from models.mysa import run_mysa as run_texgisa
 from utils.identifiers import canonicalize_series
@@ -594,6 +596,75 @@ def _render_metrics_block(results: dict):
         except Exception:
             # Fallback for older Streamlit versions without column_config.
             st.table(df)
+
+
+def _attach_risk_summary(results: dict) -> dict:
+    """Ensure risk scores/summary exist for UI and reporting."""
+
+    if results.get("risk_scores") is None and isinstance(results.get("Surv_Test"), pd.DataFrame):
+        surv_df = results["Surv_Test"]
+        if not surv_df.empty:
+            risk = 1.0 - surv_df.iloc[-1].to_numpy(dtype=float)
+            results["risk_scores"] = risk.tolist()
+            results["Mean Risk Score"] = float(np.nanmean(risk))
+    elif results.get("risk_scores") is not None and "Mean Risk Score" not in results:
+        risk_arr = np.asarray(results["risk_scores"], dtype=float)
+        results["Mean Risk Score"] = float(np.nanmean(risk_arr))
+    return results
+
+
+def _render_risk_guidance(results: dict):
+    results = _attach_risk_summary(results)
+    risk_scores = results.get("risk_scores")
+    if risk_scores is None:
+        return
+    risk_arr = np.asarray(risk_scores, dtype=float)
+    mean_risk = float(np.nanmean(risk_arr)) if risk_arr.size else float("nan")
+    st.info(
+        "**Risk score** = cumulative hazard across intervals (higher → higher predicted event likelihood). "
+        "Use it alongside the C-index to compare models; monitor how mitigation strategies lower the risk score at key intervals. "
+        f"Current mean risk score: {mean_risk:.3f}."
+    )
+
+
+def _render_cf_block(results: dict):
+    st.subheader("🧭 Counterfactual (CF) simulator")
+    results = _attach_risk_summary(results)
+    hazards = results.get("hazards")
+    risk_scores = results.get("risk_scores")
+
+    if hazards is None and risk_scores is None:
+        st.info("Train or load a model to capture hazards/risk scores before generating CF suggestions.")
+        return
+
+    cf_scope = st.radio("CF scope", ["Overall model", "Specific interval"], horizontal=True)
+    interval = None
+    if cf_scope == "Specific interval":
+        interval = st.number_input("Interval (1-indexed)", min_value=1, value=1, step=1)
+
+    placeholder = st.empty()
+    if st.button("Generate CF suggestions", use_container_width=True):
+        with st.spinner("Simulating counterfactual recommendations..."):
+            cf_result = generate_cf_from_arrays(
+                hazards if hazards is not None else np.asarray(risk_scores)[:, None],
+                risk_scores=risk_scores,
+                interval=interval,
+            )
+        placeholder.success(f"Mean target hazard: {cf_result.summary['mean_target_hazard']:.3f}; mean risk: {cf_result.summary['mean_risk']:.3f}.")
+        st.dataframe(cf_result.table, use_container_width=True)
+        if cf_result.table is not None and not cf_result.table.empty:
+            csv = cf_result.table.to_csv(index=False).encode("utf-8")
+            st.download_button(
+                "📥 Download CF table (CSV)",
+                data=csv,
+                file_name="cf_suggestions.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+        st.caption(
+            "CF suggestions propose hazard reductions (20% default) and symptom/visit adjustments for the selected interval. "
+            "Use them to design follow-up or intervention plans; rerun after retraining to observe improvements in both risk score and C-index."
+        )
 HAS_MYSA = True
 
 
@@ -2506,6 +2577,8 @@ def show():
     if "results" in st.session_state:
         results = st.session_state["results"]
         _render_metrics_block(results)
+        _render_risk_guidance(results)
+        _render_cf_block(results)
 
         curve_data = results.get("training_curve_history")
         if isinstance(curve_data, dict) and (curve_data.get("entries")):
@@ -2626,11 +2699,11 @@ def run_analysis(algo: str, df: pd.DataFrame, config: dict):
     algo = algo.lower()
     # Route to underlying algorithms
     if algo.startswith("coxtime"):
-        return coxtime.run_coxtime(df, config)
+        return _attach_risk_summary(coxtime.run_coxtime(df, config))
     elif algo.startswith("deepsurv"):
-        return deepsurv.run_deepsurv(df, config)
+        return _attach_risk_summary(deepsurv.run_deepsurv(df, config))
     elif algo.startswith("deephit"):
-        return deephit.run_deephit(df, config)
+        return _attach_risk_summary(deephit.run_deephit(df, config))
     elif "texgisa" in algo or "mysa" in algo:
         if run_texgisa is None:
             raise RuntimeError("TEXGISA not available. Please ensure models/mysa.py is present.")
@@ -2639,6 +2712,6 @@ def run_analysis(algo: str, df: pd.DataFrame, config: dict):
             mm_sources = _build_multimodal_sources(cfg)
             if mm_sources is not None:
                 cfg["multimodal_sources"] = mm_sources
-        return run_texgisa(df, cfg)
+        return _attach_risk_summary(run_texgisa(df, cfg))
     else:
         raise ValueError(f"Unknown algorithm: {algo}")
