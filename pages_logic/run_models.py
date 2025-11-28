@@ -18,6 +18,7 @@ from plotly.subplots import make_subplots
 from plotly.colors import qualitative as pq
 
 from algorithm.CF import generate_cf_from_arrays
+from algorithm.texgi_cf import generate_texgi_counterfactuals
 
 from models import coxtime, deepsurv, deephit
 from models.mysa import run_mysa as run_texgisa
@@ -627,7 +628,98 @@ def _render_risk_guidance(results: dict):
     )
 
 
+def _render_texgi_cf_block(results: dict):
+    st.subheader("🧭 TEXGI counterfactuals (per patient)")
+    cf_spec = results.get("cf_model_spec")
+    feature_df = results.get("cf_features")
+    hazards = results.get("hazards")
+    stats = results.get("cf_feature_stats")
+
+    if cf_spec is None or feature_df is None:
+        st.info("Run TEXGISA with feature captures to enable patient-level counterfactuals.")
+        return
+
+    n_samples = len(feature_df)
+    if n_samples == 0:
+        st.info("No validation samples available for counterfactual generation.")
+        return
+
+    st.caption(
+        "Gradient-based TEXGI CFs adjust a single patient's features within cohort bounds "
+        "to hit a safer cumulative hazard level. Changes are suggested along the strongest "
+        "TEXGI directions, not generic hazard scaling."
+    )
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        patient_idx = st.number_input(
+            "Patient index (validation set)",
+            min_value=0,
+            max_value=max(0, n_samples - 1),
+            value=0,
+            step=1,
+        )
+    with c2:
+        desired_extension = st.number_input(
+            "Desired survival gain (intervals)",
+            min_value=0.0,
+            value=1.0,
+            step=0.5,
+            help="Higher values demand larger hazard reductions during optimisation.",
+        )
+    with c3:
+        top_k = st.slider("Max feature edits to show", min_value=1, max_value=5, value=3, step=1)
+
+    c4, c5 = st.columns(2)
+    with c4:
+        steps = st.slider("Gradient steps", min_value=60, max_value=320, value=160, step=20)
+    with c5:
+        lr = st.slider(
+            "Step size (learning rate)", min_value=0.005, max_value=0.2, value=0.05, step=0.005
+        )
+
+    placeholder = st.empty()
+    if st.button("Generate TEXGI counterfactual", use_container_width=True):
+        with st.spinner("Optimising patient-specific TEXGI counterfactual..."):
+            cf_res = generate_texgi_counterfactuals(
+                cf_spec,
+                feature_df,
+                hazards=hazards,
+                feature_stats=stats,
+                patient_indices=[int(patient_idx)],
+                desired_extension=float(desired_extension),
+                steps=int(steps),
+                lr=float(lr),
+                top_k=int(top_k),
+            )
+        if cf_res.table.empty:
+            placeholder.warning("No actionable feature deltas found for the selected patient.")
+            return
+
+        placeholder.success(
+            f"Target cumulative hazard ≈ {cf_res.summary.get('mean_target_cumhaz', 0.0):.3f}; "
+            f"achieved ≈ {cf_res.summary.get('mean_achieved_cumhaz', 0.0):.3f}."
+        )
+        st.dataframe(cf_res.table, use_container_width=True)
+
+        csv = cf_res.table.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            "📥 Download TEXGI CF (CSV)",
+            data=csv,
+            file_name="texgi_counterfactuals.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+
+        st.caption(
+            "TEXGI counterfactuals use the trained TEXGISA model, cohort min/max bounds, "
+            "and gradient descent to propose concrete feature changes for the chosen patient."
+        )
+
+
 def _render_cf_block(results: dict):
+    if results.get("algo", "").lower() in {"texgisa", "mysa"} or results.get("cf_model_spec") is not None:
+        return _render_texgi_cf_block(results)
     st.subheader("🧭 Counterfactual (CF) simulator")
     results = _attach_risk_summary(results)
     hazards = results.get("hazards")
