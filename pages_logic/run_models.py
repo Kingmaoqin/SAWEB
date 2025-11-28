@@ -637,18 +637,36 @@ def _render_cf_block(results: dict):
         st.info("Train or load a model to capture hazards/risk scores before generating CF suggestions.")
         return
 
+    n_samples = 0
+    if hazards is not None:
+        n_samples = hazards.shape[0]
+    elif risk_scores is not None:
+        n_samples = len(risk_scores)
+
     cf_scope = st.radio("CF scope", ["Overall model", "Specific interval"], horizontal=True)
     interval = None
     if cf_scope == "Specific interval":
         interval = st.number_input("Interval (1-indexed)", min_value=1, value=1, step=1)
 
+    if n_samples <= 0:
+        st.info("No samples available for CF generation; please complete an inference or evaluation first.")
+        return
+
+    patient_choice = st.number_input("Select patient index", min_value=0, max_value=max(0, n_samples - 1), value=0, step=1)
+    batch_mode = st.checkbox("Generate for all patients (Batch Mode - may take longer)", value=False)
+    if batch_mode:
+        st.warning("Batch mode iterates through all samples to search. This may be time-consuming; please be patient.")
+    desired_extension = st.number_input("Desired survival time extension (time units/intervals)", min_value=0.0, value=1.0, step=0.5)
+
     placeholder = st.empty()
     if st.button("Generate CF suggestions", use_container_width=True):
-        with st.spinner("Simulating counterfactual recommendations..."):
+        with st.spinner("Simulating counterfactual recommendations (using deterministic search with genetic algorithm backup)..."):
             cf_result = generate_cf_from_arrays(
                 hazards if hazards is not None else np.asarray(risk_scores)[:, None],
                 risk_scores=risk_scores,
                 interval=interval,
+                patient_indices=(list(range(n_samples)) if batch_mode else [int(patient_choice)]),
+                desired_extension=float(desired_extension),
             )
         placeholder.success(f"Mean target hazard: {cf_result.summary['mean_target_hazard']:.3f}; mean risk: {cf_result.summary['mean_risk']:.3f}.")
         st.dataframe(cf_result.table, use_container_width=True)
@@ -662,8 +680,9 @@ def _render_cf_block(results: dict):
                 use_container_width=True,
             )
         st.caption(
-            "CF suggestions propose hazard reductions (20% default) and symptom/visit adjustments for the selected interval. "
-            "Use them to design follow-up or intervention plans; rerun after retraining to observe improvements in both risk score and C-index."
+            "The CF search attempts to reduce hazard to meet the survival extension goal, prioritizing deterministic scaling. "
+            "If constraints are not met, it automatically switches to a Genetic Algorithm for fallback search. "
+            "Default simulation is for a single patient; batch mode is provided for offline exploration. Please evaluate combined with risk scores and C-index."
         )
 HAS_MYSA = True
 
