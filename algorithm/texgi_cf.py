@@ -153,8 +153,24 @@ def generate_texgi_counterfactuals(
         return TexgiCFResult(pd.DataFrame(), {"error": "No valid patients provided."})
 
     stats_df = _stats_frame(feature_stats, feature_names)
-    bounds_min = torch.tensor(stats_df.get("min", pd.Series(0, index=feature_names)).to_numpy(), dtype=torch.float32)
-    bounds_max = torch.tensor(stats_df.get("max", pd.Series(0, index=feature_names)).to_numpy(), dtype=torch.float32)
+    bounds_min_raw = stats_df.get("min") if "min" in stats_df else pd.Series(np.nan, index=feature_names)
+    bounds_max_raw = stats_df.get("max") if "max" in stats_df else pd.Series(np.nan, index=feature_names)
+
+    # Fallback: if bounds are missing/invalid, let optimization operate unconstrained
+    # rather than clamping everything to zero. This keeps the algorithm the same while
+    # avoiding silent failures when preprocessing forgot to persist min/max.
+    bounds_min_arr = bounds_min_raw.to_numpy(dtype=float)
+    bounds_max_arr = bounds_max_raw.to_numpy(dtype=float)
+
+    bounds_min_arr = np.where(np.isnan(bounds_min_arr), -np.inf, bounds_min_arr)
+    bounds_max_arr = np.where(np.isnan(bounds_max_arr), np.inf, bounds_max_arr)
+
+    # If min exceeds max due to bad stats, swap to the safe ordering.
+    bounds_low = np.minimum(bounds_min_arr, bounds_max_arr)
+    bounds_high = np.maximum(bounds_min_arr, bounds_max_arr)
+
+    bounds_min = torch.tensor(bounds_low, dtype=torch.float32)
+    bounds_max = torch.tensor(bounds_high, dtype=torch.float32)
 
     immutable_features = set(immutable_features or [])
     frozen_mask = torch.tensor([name in immutable_features for name in feature_names], dtype=torch.bool)
@@ -168,6 +184,7 @@ def generate_texgi_counterfactuals(
         hazards_arr = haz_np if haz_np.ndim == 2 else haz_np[:, None]
 
     suggestions = []
+    patient_notes = []
     for idx in idx_subset:
         base_vec = torch.tensor(feat_df.iloc[idx].to_numpy(dtype=float), dtype=torch.float32).unsqueeze(0)
         with torch.no_grad():
@@ -190,6 +207,7 @@ def generate_texgi_counterfactuals(
         best_arr = best_vec.squeeze(0).detach().cpu().numpy()
         order = np.argsort(np.abs(delta))[::-1]
 
+        any_suggestion = False
         for rank, feat_idx in enumerate(order[: max(1, top_k)], start=1):
             if frozen_mask[feat_idx]:
                 continue
@@ -213,6 +231,25 @@ def generate_texgi_counterfactuals(
                     "time_unit": time_unit,
                 }
             )
+            any_suggestion = True
+
+        if not any_suggestion:
+            reason_parts = []
+            if bool(frozen_mask.all()):
+                reason_parts.append("All features have been locked")
+            if base_ch <= target_ch:
+                reason_parts.append("The current cumulative risk has fallen below the target")
+            if not reason_parts:
+                reason_parts.append("Gradient optimization did not find feasible updates")
+            patient_notes.append(
+                {
+                    "sample_id": idx,
+                    "base_cumhaz": float(base_ch),
+                    "target_cumhaz": float(target_ch),
+                    "achieved_cumhaz": float(achieved_ch),
+                    "note": "；".join(reason_parts),
+                }
+            )
 
     table = pd.DataFrame(suggestions)
     summary = {
@@ -223,6 +260,7 @@ def generate_texgi_counterfactuals(
         "mean_estimated_extension": float(table["estimated_extension"].mean()) if not table.empty else 0.0,
         "mean_estimated_time_gain": float(table["estimated_extension_time"].mean()) if not table.empty else float("nan"),
         "time_unit": time_unit,
+        "patient_notes": patient_notes,
     }
     return TexgiCFResult(table=table, summary=summary)
 
