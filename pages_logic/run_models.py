@@ -554,6 +554,25 @@ def _render_metrics_block(results: dict):
 
     _inject_metrics_css()
 
+    metric_name_map = {
+        "cindex": "Concordance index (C-index)",
+        "concordance": "Concordance index (C-index)",
+        "tdcindex": "Time-dependent concordance index",
+        "ibs": "Integrated Brier Score (IBS)",
+        "brier": "Brier score",
+        "auc": "Area under the ROC curve (AUC)",
+        "aucpr": "Area under the Precision-Recall curve (AUC-PR)",
+        "rmse": "Root Mean Squared Error (RMSE)",
+    }
+
+    def _expand_metric_name(name: str) -> str:
+        norm = name.lower().replace("_", " ").replace("-", " ").strip()
+        norm_compact = norm.replace(" ", "")
+        for key, label in metric_name_map.items():
+            if key in norm_compact:
+                return label
+        return name
+
 
     # Pretty-print common metrics while falling back to numeric formatting for others.
     def _fmt_val(name, val):
@@ -565,7 +584,10 @@ def _render_metrics_block(results: dict):
 
     # Render KPI cards with optional progress bars for c-index metrics.
     st.markdown('<div class="kpi-grid">', unsafe_allow_html=True)
+    expanded_items = []
     for name, val in items:
+        display_name = _expand_metric_name(name)
+        expanded_items.append((display_name, val, name))
         bar_html = ""
         if "index" in name.lower() or "c-index" in name.lower() or "cindex" in name.lower():
             p = max(0.0, min(1.0, val)) * 100.0
@@ -573,7 +595,7 @@ def _render_metrics_block(results: dict):
         st.markdown(
             f"""
             <div class="kpi-card">
-                <div class="kpi-title">{name}</div>
+                <div class="kpi-title">{display_name}</div>
                 <div class="kpi-value">{_fmt_val(name, val)}</div>
                 {bar_html}
             </div>
@@ -584,7 +606,7 @@ def _render_metrics_block(results: dict):
 
     # Provide an expandable raw table for copy-and-paste workflows.
     with st.expander("See raw table", expanded=False):
-        df = pd.DataFrame(items, columns=["Metric", "Value"]).sort_values("Metric", kind="stable")
+        df = pd.DataFrame(expanded_items, columns=["Metric", "Value", "Key"]).sort_values("Metric", kind="stable")
         try:
             st.dataframe(
                 df, use_container_width=True, hide_index=True,
@@ -592,6 +614,7 @@ def _render_metrics_block(results: dict):
                 column_config={
                     "Metric": st.column_config.TextColumn("Metric", width="medium"),
                     "Value":  st.column_config.NumberColumn("Value", format="%.4f", width="small"),
+                    "Key": st.column_config.TextColumn("Raw key", width="small"),
                 },
             )
         except Exception:
@@ -622,8 +645,8 @@ def _render_risk_guidance(results: dict):
     risk_arr = np.asarray(risk_scores, dtype=float)
     mean_risk = float(np.nanmean(risk_arr)) if risk_arr.size else float("nan")
     st.info(
-        "**Risk score** = cumulative hazard across intervals (higher → higher predicted event likelihood). "
-        "Use it alongside the C-index to compare models; monitor how mitigation strategies lower the risk score at key intervals. "
+        "**Risk score** = cumulative hazard summed across all observed time bins (this prediction horizon, not a future/next bin forecast). "
+        "Higher values indicate higher predicted event likelihood. Use it alongside the C-index to compare models and track how mitigation strategies lower the risk score at key intervals. "
         f"Current mean risk score: {mean_risk:.3f}."
     )
 
@@ -634,6 +657,9 @@ def _render_texgi_cf_block(results: dict):
     feature_df = results.get("cf_features")
     hazards = results.get("hazards")
     stats = results.get("cf_feature_stats")
+    time_info = results.get("time_bin_stats") or {}
+    time_edges = time_info.get("edges")
+    time_unit = results.get("time_unit_label") or time_info.get("unit_label") or "time unit"
 
     if cf_spec is None or feature_df is None:
         st.info("Run TEXGISA with feature captures to enable patient-level counterfactuals.")
@@ -698,16 +724,51 @@ def _render_texgi_cf_block(results: dict):
                 lr=float(lr),
                 top_k=int(top_k),
                 immutable_features=locked,
+                time_bin_edges=time_edges,
+                time_unit=time_unit,
             )
         if cf_res.table.empty:
             placeholder.warning("No actionable feature deltas found for the selected patient.")
             return
 
+        est_time = cf_res.summary.get("mean_estimated_time_gain")
+        est_time_txt = ""
+        if time_edges is not None and est_time is not None and not np.isnan(est_time):
+            est_time_txt = f" (~{est_time:.1f} {time_unit})"
+
         placeholder.success(
             f"Target cumulative hazard ≈ {cf_res.summary.get('mean_target_cumhaz', 0.0):.3f}; "
-            f"achieved ≈ {cf_res.summary.get('mean_achieved_cumhaz', 0.0):.3f}."
+            f"achieved ≈ {cf_res.summary.get('mean_achieved_cumhaz', 0.0):.3f}. "
+            f"Estimated survival gain ≈ {cf_res.summary.get('mean_estimated_extension', 0.0):.2f} intervals{est_time_txt}."
         )
-        st.dataframe(cf_res.table, use_container_width=True)
+
+        display_table = cf_res.table.copy()
+        if "estimated_extension_time" in display_table.columns:
+            display_table["Estimated gain (time)"] = display_table["estimated_extension_time"].apply(
+                lambda x: f"~{x:.2f} {time_unit}" if pd.notna(x) else "n/a"
+            )
+        if "estimated_extension" in display_table.columns:
+            display_table["Estimated gain (intervals)"] = display_table["estimated_extension"].apply(
+                lambda x: f"{x:.2f}" if pd.notna(x) else "n/a"
+            )
+
+        preferred_cols = [
+            "sample_id",
+            "suggestion_rank",
+            "feature",
+            "current_value",
+            "suggested_value",
+            "delta",
+            "current_cumhaz",
+            "target_cumhaz",
+            "achieved_cumhaz",
+            "Estimated gain (intervals)",
+            "Estimated gain (time)",
+        ]
+        existing_cols = [c for c in preferred_cols if c in display_table.columns]
+        display_table = display_table[[*existing_cols, *[c for c in display_table.columns if c not in existing_cols]]]
+
+        st.dataframe(display_table, use_container_width=True)
 
         csv = cf_res.table.to_csv(index=False).encode("utf-8")
         st.download_button(
