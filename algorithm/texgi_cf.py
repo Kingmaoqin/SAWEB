@@ -121,6 +121,8 @@ def generate_texgi_counterfactuals(
     lr: float = 0.05,
     top_k: int = 3,
     immutable_features: Optional[Sequence[str]] = None,
+    time_bin_edges: Optional[Sequence[float]] = None,
+    time_unit: str | None = None,
 ) -> TexgiCFResult:
     """Generate per-patient counterfactuals with TEXGI gradients.
 
@@ -129,6 +131,19 @@ def generate_texgi_counterfactuals(
     top feature changes that reduce cumulative hazard toward the target level
     implied by ``desired_extension``.
     """
+
+    def _estimate_time_gain(extension_intervals: float) -> float:
+        if time_bin_edges is None:
+            return float("nan")
+        edges = np.asarray(list(time_bin_edges), dtype=float)
+        edges = edges[~np.isnan(edges)]
+        if edges.size == 0:
+            return float("nan")
+        widths = np.diff(np.concatenate([[0.0], edges]))
+        if widths.size == 0:
+            return float("nan")
+        typical_width = float(np.nanmedian(widths))
+        return max(float(extension_intervals), 0.0) * typical_width
 
     feature_names = list(model_spec.get("feature_names", []))
     feat_df = _to_feature_frame(features, feature_names)
@@ -181,6 +196,7 @@ def generate_texgi_counterfactuals(
             if np.isclose(delta[feat_idx], 0.0):
                 continue
             feat_name = feature_names[feat_idx]
+            est_gain_intervals = float(num_bins * max(base_ch / max(achieved_ch, 1e-6) - 1.0, 0.0))
             suggestions.append(
                 {
                     "sample_id": idx,
@@ -192,7 +208,9 @@ def generate_texgi_counterfactuals(
                     "current_cumhaz": float(base_ch),
                     "target_cumhaz": float(target_ch),
                     "achieved_cumhaz": float(achieved_ch),
-                    "estimated_extension": float(num_bins * max(base_ch / max(achieved_ch, 1e-6) - 1.0, 0.0)),
+                    "estimated_extension": est_gain_intervals,
+                    "estimated_extension_time": _estimate_time_gain(est_gain_intervals),
+                    "time_unit": time_unit,
                 }
             )
 
@@ -202,6 +220,9 @@ def generate_texgi_counterfactuals(
         "mean_current_cumhaz": float(table["current_cumhaz"].mean()) if not table.empty else 0.0,
         "mean_target_cumhaz": float(table["target_cumhaz"].mean()) if not table.empty else 0.0,
         "mean_achieved_cumhaz": float(table["achieved_cumhaz"].mean()) if not table.empty else 0.0,
+        "mean_estimated_extension": float(table["estimated_extension"].mean()) if not table.empty else 0.0,
+        "mean_estimated_time_gain": float(table["estimated_extension_time"].mean()) if not table.empty else float("nan"),
+        "time_unit": time_unit,
     }
     return TexgiCFResult(table=table, summary=summary)
 
