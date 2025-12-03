@@ -973,6 +973,24 @@ def _prepare_tabular_inputs(data: pd.DataFrame, config: Dict) -> Dict[str, Any]:
     df = make_intervals(df, duration_col="duration", event_col="event", n_bins=n_bins, method="quantile")
     num_bins = int(df["interval_number"].max())
 
+    bin_stats = (
+        df.groupby("interval_number")["duration"]
+        .agg(["min", "max", "median"])
+        .reset_index()
+        .rename(columns={"interval_number": "interval"})
+        .sort_values("interval")
+    )
+    bin_edges = bin_stats["max"].tolist()
+    median_width = float(np.median(np.diff([0.0] + bin_edges))) if len(bin_edges) else float("nan")
+    time_unit_label = str(config.get("time_unit", "time unit"))
+
+    time_bin_stats = {
+        "unit_label": time_unit_label,
+        "edges": bin_edges,
+        "median_width": median_width,
+        "intervals": bin_stats.to_dict(orient="records"),
+    }
+
     feat_cols = config.get("feature_cols")
     if not feat_cols:
         feat_cols = infer_feature_cols(df, exclude=["duration", "event"])
@@ -1058,6 +1076,8 @@ def _prepare_tabular_inputs(data: pd.DataFrame, config: Dict) -> Dict[str, Any]:
         "mask_val": None,
         "dropped_feature_columns": dropped_cols,
         "feature_stats": feature_stats,
+        "time_bin_stats": time_bin_stats,
+        "time_unit_label": time_unit_label,
     }
 
 
@@ -1832,6 +1852,8 @@ def _run_mysa_core(prepared: Dict[str, Any], config: Dict) -> Dict:
         "cf_features": cf_features,
         "cf_feature_stats": prepared.get("feature_stats"),
         "cf_model_spec": cf_model_spec,
+        "time_bin_stats": prepared.get("time_bin_stats"),
+        "time_unit_label": prepared.get("time_unit_label", "time unit"),
     }
 
 
