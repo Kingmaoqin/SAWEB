@@ -236,11 +236,11 @@ def generate_texgi_counterfactuals(
         if not any_suggestion:
             reason_parts = []
             if bool(frozen_mask.all()):
-                reason_parts.append("所有特征均已锁定")
+                reason_parts.append("All features have been locked")
             if base_ch <= target_ch:
-                reason_parts.append("当前累计风险已低于目标")
+                reason_parts.append("The current cumulative risk has fallen below the target")
             if not reason_parts:
-                reason_parts.append("梯度优化未找到可行更新")
+                reason_parts.append("Gradient optimization did not find feasible updates")
             patient_notes.append(
                 {
                     "sample_id": idx,
