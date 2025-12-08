@@ -28,7 +28,8 @@ def get_llm():
 
     # Explicitly set the new Hugging Face router endpoint to avoid the deprecated
     # api-inference.huggingface.co URL (returns HTTP 410).
-    os.environ.setdefault("HF_ENDPOINT", "https://router.huggingface.co")
+    default_endpoint = "https://router.huggingface.co"
+    os.environ.setdefault("HF_ENDPOINT", default_endpoint)
 
     possible_keys = ["HF_TOKEN", "HUGGINGFACEHUB_API_TOKEN", "HF_API_TOKEN"]
     
@@ -43,21 +44,30 @@ def get_llm():
                 hf_token = os.getenv(key)
                 break
 
+    if hf_token:
+        hf_token = str(hf_token).strip()
     if not hf_token:
         st.error("⚠️ not found Hugging Face Token")
         raise ValueError("Hugging Face Token not found.")
 
-    repo_id = os.getenv("HF_LLM_ID", "meta-llama/Meta-Llama-3-8B-Instruct")
+    repo_id = os.getenv("HF_LLM_ID", "meta-llama/Meta-Llama-3-8B-Instruct") or "meta-llama/Meta-Llama-3-8B-Instruct"
+    repo_id = repo_id.strip()
     max_new_tokens = int(os.getenv("HF_MAX_NEW_TOKENS", "512"))
     temperature = float(os.getenv("HF_TEMPERATURE", "0.7"))
     top_p = float(os.getenv("HF_TOP_P", "0.9"))
 
+    # Fall back to the router endpoint if the env var is missing or blank to avoid
+    # Pydantic validation failures from an empty URL.
+    endpoint_url = os.getenv("HF_ENDPOINT") or default_endpoint
+
     endpoint = HuggingFaceEndpoint(
+        model=repo_id,
         repo_id=repo_id,
+        endpoint_url=endpoint_url,
         temperature=temperature,
         top_p=top_p,
         max_new_tokens=max_new_tokens,
-        huggingfacehub_api_token=hf_token, # 显式传入 Token
+        huggingfacehub_api_token=hf_token,  # 显式传入 Token
         timeout=120,
     )
     
