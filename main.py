@@ -5,13 +5,14 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 import streamlit as st
+
+# Streamlit 要求 set_page_config 是脚本中的第一条命令，因此放在任何其他 st 调用之前
+st.set_page_config(page_title="DHAI Lab Survival Analysis Platform", layout="wide")
+
 from pages_logic import home, algorithms, run_models, publications, contact, chat_with_agent
 from utils import user_center
 import pandas as pd
 from sa_data_manager import DataManager # 确保导入了DataManager类
-
-# Streamlit 要求 set_page_config 是脚本中的第一条命令，因此放在任何其他 st 调用之前
-st.set_page_config(page_title="DHAI Lab Survival Analysis Platform", layout="wide")
 
 if 'data_manager' not in st.session_state:
     st.session_state.data_manager = DataManager()
