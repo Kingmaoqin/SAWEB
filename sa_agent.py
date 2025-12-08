@@ -25,9 +25,17 @@ from sa_tools import (
 # A lightweight fallback model so the app can still render when the HF token is
 # missing or invalid. It simply echoes the last user message with guidance.
 class OfflineFallbackChatModel(BaseChatModel):
+    reason: str
+
+    class Config:
+        arbitrary_types_allowed = True
+        extra = "allow"
+
     def __init__(self, reason: str):
-        super().__init__()
-        self.reason = reason
+        # BaseChatModel inherits from Pydantic's BaseModel and rejects unknown
+        # attributes by default, so we pass `reason` through the parent
+        # initializer and allow extras via Config.
+        super().__init__(reason=reason)
 
     def _generate(self, messages, stop=None, run_manager=None, **kwargs):  # type: ignore[override]
         last_user = next((m.content for m in reversed(messages) if isinstance(m, HumanMessage)), "")
@@ -59,11 +67,20 @@ def get_llm():
 
     possible_keys = ["HF_TOKEN", "HUGGINGFACEHUB_API_TOKEN", "HF_API_TOKEN"]
 
+    # Priority 1: Streamlit secrets
     for key in possible_keys:
         if key in st.secrets:
             hf_token = st.secrets[key]
             break
 
+    # Priority 2: Tokens stored in the current Streamlit session (e.g., set from a UI input)
+    if not hf_token and hasattr(st, "session_state"):
+        for key in possible_keys:
+            if st.session_state.get(key):
+                hf_token = st.session_state[key]
+                break
+
+    # Priority 3: Environment variables
     if not hf_token:
         for key in possible_keys:
             if os.getenv(key):
