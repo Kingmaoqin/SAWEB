@@ -91,6 +91,11 @@ def get_llm():
                 hf_token = os.getenv(key)
                 break
 
+    # Normalise whitespace to avoid accidental trailing newlines from secrets files
+    # that would make the token invalid during authentication.
+    if hf_token:
+        hf_token = hf_token.strip()
+
     repo_id = os.getenv("HF_LLM_ID", "meta-llama/Meta-Llama-3-8B-Instruct")
     max_new_tokens = int(os.getenv("HF_MAX_NEW_TOKENS", "512"))
     temperature = float(os.getenv("HF_TEMPERATURE", "0.7"))
@@ -101,9 +106,14 @@ def get_llm():
         st.error("⚠️ Hugging Face Token not found. Falling back to offline mode.")
         return OfflineFallbackChatModel(reason)
 
+    # Standardize the token location so downstream LangChain helpers can pick it up.
+    # HuggingFaceEndpoint checks the HUGGINGFACEHUB_API_TOKEN env var by default.
+    os.environ["HUGGINGFACEHUB_API_TOKEN"] = hf_token
+
     try:
         endpoint = HuggingFaceEndpoint(
             repo_id=repo_id,
+            task="text-generation",
             temperature=temperature,
             top_p=top_p,
             max_new_tokens=max_new_tokens,
