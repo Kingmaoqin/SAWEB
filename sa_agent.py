@@ -5,7 +5,9 @@ from typing import TypedDict, Annotated, List, Dict, Any
 import operator
 import os
 import json
-from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, AIMessage
+from langchain_core.outputs import ChatGeneration, ChatResult
+from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.tools import tool
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
@@ -20,6 +22,43 @@ from sa_tools import (
     suggest_next_actions
 )
 
+# A lightweight fallback model so the app can still render when the HF token is
+# missing or invalid. It simply echoes the last user message with guidance.
+class OfflineFallbackChatModel(BaseChatModel):
+    reason: str
+
+    class Config:
+        arbitrary_types_allowed = True
+        extra = "allow"
+
+    def __init__(self, reason: str):
+        # BaseChatModel inherits from Pydantic's BaseModel and rejects unknown
+        # attributes by default, so we pass `reason` through the parent
+        # initializer and allow extras via Config.
+        super().__init__(reason=reason)
+
+    def bind_tools(self, *args, **kwargs):
+        """Return self so the graph can call .invoke without raising."""
+        return self
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):  # type: ignore[override]
+        last_user = next((m.content for m in reversed(messages) if isinstance(m, HumanMessage)), "")
+        notice = (
+            "⚠️ Running in offline mode because the Hugging Face endpoint could not be used. "
+            "Please set a valid HF token in the environment or Streamlit secrets."
+        )
+        content = f"{notice}\nReason: {self.reason}\nLast user message: {last_user}"
+        generation = ChatGeneration(message=AIMessage(content=content))
+        return ChatResult(generations=[generation])
+
+    async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):  # type: ignore[override]
+        return self._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+    @property
+    def _llm_type(self) -> str:
+        return "offline-fallback"
+
+
 # Function to select the LLM based on available API keys (from DRIVE project)
 def get_llm():
     """Selects an appropriate LLM based on environment variables."""
@@ -31,38 +70,53 @@ def get_llm():
     os.environ.setdefault("HF_ENDPOINT", "https://router.huggingface.co")
 
     possible_keys = ["HF_TOKEN", "HUGGINGFACEHUB_API_TOKEN", "HF_API_TOKEN"]
-    
+
+    # Priority 1: Streamlit secrets
     for key in possible_keys:
         if key in st.secrets:
             hf_token = st.secrets[key]
             break
 
+    # Priority 2: Tokens stored in the current Streamlit session (e.g., set from a UI input)
+    if not hf_token and hasattr(st, "session_state"):
+        for key in possible_keys:
+            if st.session_state.get(key):
+                hf_token = st.session_state[key]
+                break
+
+    # Priority 3: Environment variables
     if not hf_token:
         for key in possible_keys:
             if os.getenv(key):
                 hf_token = os.getenv(key)
                 break
 
-    if not hf_token:
-        st.error("⚠️ not found Hugging Face Token")
-        raise ValueError("Hugging Face Token not found.")
-
     repo_id = os.getenv("HF_LLM_ID", "meta-llama/Meta-Llama-3-8B-Instruct")
     max_new_tokens = int(os.getenv("HF_MAX_NEW_TOKENS", "512"))
     temperature = float(os.getenv("HF_TEMPERATURE", "0.7"))
     top_p = float(os.getenv("HF_TOP_P", "0.9"))
 
-    endpoint = HuggingFaceEndpoint(
-        repo_id=repo_id,
-        temperature=temperature,
-        top_p=top_p,
-        max_new_tokens=max_new_tokens,
-        huggingfacehub_api_token=hf_token, # 显式传入 Token
-        timeout=120,
-    )
-    
-    # 关键修改：显式传入 model_id，避免 ChatHuggingFace 尝试去查询你的端点权限
-    return ChatHuggingFace(llm=endpoint, model_id=repo_id)
+    if not hf_token:
+        reason = "No Hugging Face token was provided."
+        st.error("⚠️ Hugging Face Token not found. Falling back to offline mode.")
+        return OfflineFallbackChatModel(reason)
+
+    try:
+        endpoint = HuggingFaceEndpoint(
+            repo_id=repo_id,
+            temperature=temperature,
+            top_p=top_p,
+            max_new_tokens=max_new_tokens,
+            huggingfacehub_api_token=hf_token, # 显式传入 Token
+            timeout=120,
+        )
+
+        # 关键修改：显式传入 model_id，避免 ChatHuggingFace 尝试去查询你的端点权限
+        return ChatHuggingFace(llm=endpoint, model_id=repo_id)
+    except Exception as exc:
+        reason = f"Failed to initialize Hugging Face endpoint: {exc}"
+        st.error("⚠️ Could not authenticate with Hugging Face. Falling back to offline mode.")
+        return OfflineFallbackChatModel(reason)
 
     # Continue supporting other hosted providers in case a user explicitly sets
     # those credentials.
