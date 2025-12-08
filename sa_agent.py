@@ -37,6 +37,10 @@ class OfflineFallbackChatModel(BaseChatModel):
         # initializer and allow extras via Config.
         super().__init__(reason=reason)
 
+    def bind_tools(self, *args, **kwargs):
+        """Return self so the graph can call .invoke without raising."""
+        return self
+
     def _generate(self, messages, stop=None, run_manager=None, **kwargs):  # type: ignore[override]
         last_user = next((m.content for m in reversed(messages) if isinstance(m, HumanMessage)), "")
         notice = (
