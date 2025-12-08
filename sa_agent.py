@@ -101,6 +101,10 @@ def get_llm():
         st.error("⚠️ Hugging Face Token not found. Falling back to offline mode.")
         return OfflineFallbackChatModel(reason)
 
+    # Standardize the token location so downstream LangChain helpers can pick it up.
+    # HuggingFaceEndpoint checks the HUGGINGFACEHUB_API_TOKEN env var by default.
+    os.environ["HUGGINGFACEHUB_API_TOKEN"] = hf_token
+
     try:
         endpoint = HuggingFaceEndpoint(
             repo_id=repo_id,
