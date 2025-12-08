@@ -67,9 +67,9 @@ def get_llm():
 
     # Explicitly set the new Hugging Face router endpoint to avoid the deprecated
     # api-inference.huggingface.co URL (returns HTTP 410).
-    os.environ.setdefault("HF_ENDPOINT", "https://router.huggingface.co")
+    os.environ.setdefault("HF_INFERENCE_ENDPOINT", "https://router.huggingface.co")
 
-    possible_keys = ["HF_TOKEN", "HUGGINGFACEHUB_API_TOKEN", "HF_API_TOKEN"]
+    possible_keys = ["HF_TOKEN", "HUGGINGFACEHUB_API_TOKEN", "HF_API_TOKEN"]    
 
     # Priority 1: Streamlit secrets
     for key in possible_keys:
