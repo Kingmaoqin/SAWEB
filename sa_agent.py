@@ -44,8 +44,8 @@ class OfflineFallbackChatModel(BaseChatModel):
     def _generate(self, messages, stop=None, run_manager=None, **kwargs):  # type: ignore[override]
         last_user = next((m.content for m in reversed(messages) if isinstance(m, HumanMessage)), "")
         notice = (
-            "⚠️ Running in offline mode because the Hugging Face endpoint could not be used. "
-            "Please set a valid HF token in the environment or Streamlit secrets."
+            "⚠️ Running in offline mode because a supported LLM endpoint could not be used. "
+            "Please set a valid API key (Groq, Hugging Face, etc.) in the environment or Streamlit secrets."
         )
         content = f"{notice}\nReason: {self.reason}\nLast user message: {last_user}"
         generation = ChatGeneration(message=AIMessage(content=content))
@@ -63,69 +63,37 @@ class OfflineFallbackChatModel(BaseChatModel):
 def get_llm():
     """Selects an appropriate LLM based on environment variables."""
 
-    hf_token = None
+    def _first_token(possible_keys: list[str]):
+        # Priority 1: Streamlit secrets
+        for key in possible_keys:
+            if key in st.secrets:
+                return st.secrets[key]
+
+        # Priority 2: Tokens stored in the current Streamlit session (e.g., set from a UI input)
+        if hasattr(st, "session_state"):
+            for key in possible_keys:
+                if st.session_state.get(key):
+                    return st.session_state[key]
+
+        # Priority 3: Environment variables
+        for key in possible_keys:
+            if os.getenv(key):
+                return os.getenv(key)
+
+        return None
 
     # ✅ 正确：把推理接口改到 router，而不是旧的 api-inference.huggingface.co
     os.environ.setdefault("HF_INFERENCE_ENDPOINT", "https://router.huggingface.co")
 
-    possible_keys = ["HF_TOKEN", "HUGGINGFACEHUB_API_TOKEN", "HF_API_TOKEN"]    
-
-    # Priority 1: Streamlit secrets
-    for key in possible_keys:
-        if key in st.secrets:
-            hf_token = st.secrets[key]
-            break
-
-    # Priority 2: Tokens stored in the current Streamlit session (e.g., set from a UI input)
-    if not hf_token and hasattr(st, "session_state"):
-        for key in possible_keys:
-            if st.session_state.get(key):
-                hf_token = st.session_state[key]
-                break
-
-    # Priority 3: Environment variables
-    if not hf_token:
-        for key in possible_keys:
-            if os.getenv(key):
-                hf_token = os.getenv(key)
-                break
+    hf_token = _first_token(["HF_TOKEN", "HUGGINGFACEHUB_API_TOKEN", "HF_API_TOKEN"])
+    groq_token = _first_token(["GROQ_API_KEY"])
 
     # Normalise whitespace to avoid accidental trailing newlines from secrets files
     # that would make the token invalid during authentication.
     if hf_token:
         hf_token = hf_token.strip()
-
-    repo_id = os.getenv("HF_LLM_ID", "meta-llama/Meta-Llama-3-8B-Instruct")
-    max_new_tokens = int(os.getenv("HF_MAX_NEW_TOKENS", "512"))
-    temperature = float(os.getenv("HF_TEMPERATURE", "0.7"))
-    top_p = float(os.getenv("HF_TOP_P", "0.9"))
-
-    if not hf_token:
-        reason = "No Hugging Face token was provided."
-        st.error("⚠️ Hugging Face Token not found. Falling back to offline mode.")
-        return OfflineFallbackChatModel(reason)
-
-    # Standardize the token location so downstream LangChain helpers can pick it up.
-    # HuggingFaceEndpoint checks the HUGGINGFACEHUB_API_TOKEN env var by default.
-    os.environ["HUGGINGFACEHUB_API_TOKEN"] = hf_token
-
-    try:
-        endpoint = HuggingFaceEndpoint(
-            repo_id=repo_id,
-            task="text-generation",
-            temperature=temperature,
-            top_p=top_p,
-            max_new_tokens=max_new_tokens,
-            huggingfacehub_api_token=hf_token, # 显式传入 Token
-            timeout=120,
-        )
-
-        # 关键修改：显式传入 model_id，避免 ChatHuggingFace 尝试去查询你的端点权限
-        return ChatHuggingFace(llm=endpoint, model_id=repo_id)
-    except Exception as exc:
-        reason = f"Failed to initialize Hugging Face endpoint: {exc}"
-        st.error("⚠️ Could not authenticate with Hugging Face. Falling back to offline mode.")
-        return OfflineFallbackChatModel(reason)
+    if groq_token:
+        groq_token = groq_token.strip()
 
     # Continue supporting other hosted providers in case a user explicitly sets
     # those credentials.
@@ -136,24 +104,54 @@ def get_llm():
             openai_api_key="not-needed",
             openai_api_base=os.getenv("VLLM_ENDPOINT"),
             temperature=0.7,
-            max_tokens=1024
+            max_tokens=1024,
         )
-    elif os.getenv("GROQ_API_KEY"):
+
+    if groq_token:
         from langchain_openai import ChatOpenAI
         return ChatOpenAI(
-            model="llama3-8b-8192",
-            openai_api_key=os.getenv("GROQ_API_KEY"),
-            openai_api_base="https://api.groq.com/openai/v1",
-            temperature=0.7,
-            max_tokens=1024
+            model=os.getenv("GROQ_MODEL", "llama-3.1-8b-instant"),
+            openai_api_key=groq_token,
+            openai_api_base=os.getenv("GROQ_API_BASE", "https://api.groq.com/openai/v1"),
+            temperature=float(os.getenv("GROQ_TEMPERATURE", "0.7")),
+            max_tokens=int(os.getenv("GROQ_MAX_TOKENS", "1024")),
         )
-    elif os.getenv("GOOGLE_API_KEY"):
+
+    if hf_token:
+        repo_id = os.getenv("HF_LLM_ID", "meta-llama/Meta-Llama-3-8B-Instruct")
+        max_new_tokens = int(os.getenv("HF_MAX_NEW_TOKENS", "512"))
+        temperature = float(os.getenv("HF_TEMPERATURE", "0.7"))
+        top_p = float(os.getenv("HF_TOP_P", "0.9"))
+
+        # Standardize the token location so downstream LangChain helpers can pick it up.
+        # HuggingFaceEndpoint checks the HUGGINGFACEHUB_API_TOKEN env var by default.
+        os.environ["HUGGINGFACEHUB_API_TOKEN"] = hf_token
+
+        try:
+            endpoint = HuggingFaceEndpoint(
+                repo_id=repo_id,
+                task="text-generation",
+                temperature=temperature,
+                top_p=top_p,
+                max_new_tokens=max_new_tokens,
+                huggingfacehub_api_token=hf_token, # 显式传入 Token
+                timeout=120,
+            )
+
+            # 关键修改：显式传入 model_id，避免 ChatHuggingFace 尝试去查询你的端点权限
+            return ChatHuggingFace(llm=endpoint, model_id=repo_id)
+        except Exception as exc:
+            reason = f"Failed to initialize Hugging Face endpoint: {exc}"
+            st.error("⚠️ Could not authenticate with Hugging Face. Falling back to offline mode.")
+            return OfflineFallbackChatModel(reason)
+
+    if os.getenv("GOOGLE_API_KEY"):
         from langchain_google_genai import ChatGoogleGenerativeAI
         return ChatGoogleGenerativeAI(model="gemini-pro", temperature=0.7, max_output_tokens=1024)
-    else:
-        raise ValueError(
-            "No LLM API key found. Please set HF_API_TOKEN or another supported provider's key."
-        )
+
+    reason = "No LLM API key was provided (Groq, HF, or other supported providers)."
+    st.error("⚠️ LLM API key not found. Falling back to offline mode.")
+    return OfflineFallbackChatModel(reason)
 
 
 # Define the Agent's state
