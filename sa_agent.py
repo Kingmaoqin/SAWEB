@@ -25,7 +25,14 @@ def get_llm():
     """Selects an appropriate LLM based on environment variables."""
 
     hf_token = None
-    
+
+    # Explicitly set the new Hugging Face router endpoint to avoid the deprecated
+    # api-inference.huggingface.co URL (returns HTTP 410).
+    # Use the new router host explicitly when creating the endpoint to avoid the deprecated
+    # api-inference.huggingface.co base URL (which now returns HTTP 410).
+    default_endpoint = "https://router.huggingface.co"
+    os.environ.setdefault("HF_ENDPOINT", default_endpoint)
+
     possible_keys = ["HF_TOKEN", "HUGGINGFACEHUB_API_TOKEN", "HF_API_TOKEN"]
     
     for key in possible_keys:
@@ -49,11 +56,13 @@ def get_llm():
     top_p = float(os.getenv("HF_TOP_P", "0.9"))
 
     endpoint = HuggingFaceEndpoint(
+        model=repo_id,
         repo_id=repo_id,
+        endpoint_url=os.getenv("HF_ENDPOINT", default_endpoint),
         temperature=temperature,
         top_p=top_p,
         max_new_tokens=max_new_tokens,
-        huggingfacehub_api_token=hf_token, # 显式传入 Token
+        huggingfacehub_api_token=hf_token,  # 显式传入 Token
         timeout=120,
     )
     
