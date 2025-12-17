@@ -240,12 +240,24 @@ def get_algorithm_explanation(algorithm_name: str) -> dict:
             "name": "TEXGISA (MySA)",
             "summary": "Generative survival analysis that couples multimodal encoders with TEXGISA explanations and optional expert priors.",
             "use_case": "Choose when you need end-to-end multimodal training or when domain experts provide priors that should regularise the hazard estimates."
+        },
+        "survival analysis": {
+            "name": "Survival Analysis",
+            "summary": "A family of statistical methods for modelling time-to-event outcomes (e.g., time until relapse or equipment failure).",
+            "use_case": "Use to estimate risk over time, compare treatment groups, or handle censored observations where the event has not yet occurred."
         }
     }
     key = algorithm_name.lower()
     if key == "texgisa (mysa)":
         key = "texgisa"
-    return explanations.get(key, {"error": "Algorithm not found."})
+    # Provide a helpful fallback instead of an error so generic questions still receive an answer.
+    if key not in explanations:
+        return {
+            "name": algorithm_name,
+            "summary": "Survival analysis studies the time until an event occurs (like death or failure) while handling censored observations.",
+            "use_case": "Use it when you need to estimate risk or survival probability over time, compare cohorts, or model how features influence event timing."
+        }
+    return explanations[key]
 
 def compare_algorithms() -> dict:
     """Provides a comparison of the available survival analysis algorithms."""
