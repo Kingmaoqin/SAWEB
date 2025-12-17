@@ -2649,7 +2649,7 @@ def show():
         c_run1, c_run2, c_run3 = st.columns(3)
         with c_run1:
             preview_clicked = st.button(
-                "👀 Preview FI (no expert priors)",
+                "👀 Preview Feature Importance (no expert priors)",
                 use_container_width=True,
                 help="Run a short TEXGISA pass (λ_expert=0) to preview TEXGISA feature importance (powered by TEXGISA) before full training.",
             )
