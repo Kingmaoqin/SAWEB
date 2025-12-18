@@ -4,6 +4,10 @@ import json
 from typing import Any, Dict
 
 import streamlit as st
+try:  # pragma: no cover - optional when Streamlit isn't running
+    from streamlit.runtime.scriptrunner import get_script_run_ctx
+except Exception:  # pragma: no cover
+    get_script_run_ctx = None  # type: ignore
 import pandas as pd
 from models import coxtime, deepsurv, deephit
 
@@ -123,10 +127,19 @@ def run_survival_analysis(
     # Ensure the shared DataManager exists in the current session; fall back to the
     # most recently used manager when tools run in a background thread without a
     # ScriptRunContext.
+    ctx_available = False
     try:
-        dm = st.session_state.get("data_manager")
+        if get_script_run_ctx is not None and get_script_run_ctx() is not None:
+            ctx_available = True
     except Exception:
-        dm = None
+        ctx_available = False
+
+    dm = None
+    if ctx_available:
+        try:
+            dm = st.session_state.get("data_manager")
+        except Exception:
+            dm = None
 
     if dm is None:
         from sa_data_manager import get_shared_manager
@@ -318,10 +331,19 @@ def explain_hyperparameter(param_name: str) -> dict:
 
 def get_data_summary() -> dict:
     """Retrieves a summary of the currently loaded dataset."""
+    ctx_available = False
     try:
-        dm = st.session_state.get("data_manager")
+        if get_script_run_ctx is not None and get_script_run_ctx() is not None:
+            ctx_available = True
     except Exception:
-        dm = None
+        ctx_available = False
+
+    dm = None
+    if ctx_available:
+        try:
+            dm = st.session_state.get("data_manager")
+        except Exception:
+            dm = None
 
     if dm is None:
         from sa_data_manager import get_shared_manager

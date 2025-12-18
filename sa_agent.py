@@ -295,8 +295,20 @@ def create_sa_agent():
         messages = state["messages"]
         # Add system prompt to every call
         full_messages = [SystemMessage(content=SYSTEM_PROMPT)] + messages
-        response = llm_with_tools.invoke(full_messages)
-        return {"messages": [response]}
+        try:
+            response = llm_with_tools.invoke(full_messages)
+            return {"messages": [response]}
+        except Exception as exc:  # pragma: no cover - defensive guard for upstream API failures
+            import logging
+
+            logging.exception("LLM call failed")
+            fallback = AIMessage(
+                content=(
+                    "Sorry, I couldn't complete that request because the model call "
+                    "failed. Please try again in a moment or adjust your prompt."
+                )
+            )
+            return {"messages": [fallback]}
 
     def should_continue(state: AgentState) -> str:
         """Determines the next step: call tools or end."""
