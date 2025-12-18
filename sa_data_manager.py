@@ -3,6 +3,14 @@
 import pandas as pd
 from typing import Optional
 
+# Streamlit's ``ScriptRunContext`` is only available in the main app thread.
+# We guard access to ``st.session_state`` so background tool threads don't
+# trigger warnings about a missing context.
+try:  # pragma: no cover - import is cheap but optional during tests
+    from streamlit.runtime.scriptrunner import get_script_run_ctx
+except Exception:  # Streamlit might not be installed in all environments
+    get_script_run_ctx = None  # type: ignore
+
 
 # Keep a module-level reference to the most recent manager so agent/tool threads
 # that don't have a ScriptRunContext can still access the uploaded data.
@@ -24,8 +32,15 @@ def get_shared_manager(*, allow_global_fallback: bool = False) -> "DataManager":
     in-flight background tasks spawned by the same session.
     """
 
+    ctx_available = False
     try:
-        if hasattr(__import__("streamlit"), "session_state"):
+        if get_script_run_ctx is not None and get_script_run_ctx() is not None:
+            ctx_available = True
+    except Exception:
+        ctx_available = False
+
+    if ctx_available:
+        try:
             import streamlit as st  # local import avoids hard dependency during tests
 
             if "data_manager" in st.session_state:
@@ -36,9 +51,9 @@ def get_shared_manager(*, allow_global_fallback: bool = False) -> "DataManager":
             # Fresh session: create an isolated manager (do NOT reuse _LAST_LOADED_MANAGER).
             st.session_state["data_manager"] = DataManager()
             return st.session_state["data_manager"]
-    except Exception:
-        # When called from background threads there is no ScriptRunContext; fall back below.
-        pass
+        except Exception:
+            # If Streamlit is partially initialised, continue to the fallbacks below.
+            pass
 
     if allow_global_fallback and _LAST_LOADED_MANAGER is not None:
         return _LAST_LOADED_MANAGER  # type: ignore[return-value]
