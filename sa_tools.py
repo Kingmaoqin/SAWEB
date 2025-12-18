@@ -120,12 +120,25 @@ def run_survival_analysis(
     """
     Runs a specified survival analysis model on the currently loaded dataset.
     """
-    # Ensure the shared DataManager exists in the current session.
-    if "data_manager" not in st.session_state:
-        from sa_data_manager import DataManager
-        st.session_state.data_manager = DataManager()
+    # Ensure the shared DataManager exists in the current session; fall back to the
+    # most recently used manager when tools run in a background thread without a
+    # ScriptRunContext.
+    try:
+        dm = st.session_state.get("data_manager")
+    except Exception:
+        dm = None
 
-    data = st.session_state.data_manager.get_data()
+    if dm is None:
+        from sa_data_manager import get_shared_manager
+
+        dm = get_shared_manager()
+    else:
+        # keep the global mirror warm for non-Streamlit threads
+        from sa_data_manager import _remember_manager  # type: ignore
+
+        _remember_manager(dm)
+
+    data = dm.get_data()
     if data is None:
         return {"error": "No data found. Please ask the user to upload a dataset on the 'Run Models' page first."}
 
@@ -303,7 +316,20 @@ def explain_hyperparameter(param_name: str) -> dict:
 
 def get_data_summary() -> dict:
     """Retrieves a summary of the currently loaded dataset."""
-    dm = st.session_state.get("data_manager")
-    if dm is None or dm.get_data() is None:
+    try:
+        dm = st.session_state.get("data_manager")
+    except Exception:
+        dm = None
+
+    if dm is None:
+        from sa_data_manager import get_shared_manager
+
+        dm = get_shared_manager()
+    else:
+        from sa_data_manager import _remember_manager  # type: ignore
+
+        _remember_manager(dm)
+
+    if dm.get_data() is None:
         return {"error": "No data has been loaded. Please upload a dataset on the 'Run Models' page."}
     return dm.get_data_summary()
