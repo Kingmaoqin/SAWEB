@@ -14,8 +14,16 @@ def _remember_manager(dm: "DataManager") -> None:
     _LAST_LOADED_MANAGER = dm
 
 
-def get_shared_manager() -> "DataManager":
-    """Return the session manager when available, else fall back to the last loader."""
+def get_shared_manager(*, allow_global_fallback: bool = False) -> "DataManager":
+    """Return the session manager when available.
+
+    A new ``DataManager`` is created for a fresh Streamlit session. Only when
+    ``allow_global_fallback`` is ``True`` (used by background threads lacking a
+    ScriptRunContext) do we reuse the last loaded manager. This avoids leaking a
+    previous user's dataset into a new session while still preserving access for
+    in-flight background tasks spawned by the same session.
+    """
+
     try:
         if hasattr(__import__("streamlit"), "session_state"):
             import streamlit as st  # local import avoids hard dependency during tests
@@ -24,13 +32,19 @@ def get_shared_manager() -> "DataManager":
                 dm = st.session_state["data_manager"]
                 _remember_manager(dm)
                 return dm
+
+            # Fresh session: create an isolated manager (do NOT reuse _LAST_LOADED_MANAGER).
+            st.session_state["data_manager"] = DataManager()
+            return st.session_state["data_manager"]
     except Exception:
         # When called from background threads there is no ScriptRunContext; fall back below.
         pass
 
-    if _LAST_LOADED_MANAGER is None:
-        _remember_manager(DataManager())
-    return _LAST_LOADED_MANAGER  # type: ignore[return-value]
+    if allow_global_fallback and _LAST_LOADED_MANAGER is not None:
+        return _LAST_LOADED_MANAGER  # type: ignore[return-value]
+
+    # Background call without an active session and no prior manager: return a fresh one.
+    return DataManager()
 
 
 class DataManager:

@@ -123,53 +123,6 @@ def _run_pending_if_confirmed(response_text: str) -> bool:
     return True
 
 
-def _queue_confirmation(label: str, fn, kwargs: dict):
-    """Store a pending action that requires an explicit yes/no before execution."""
-    st.session_state["pending_action"] = {
-        "label": label,
-        "fn": fn,
-        "kwargs": kwargs,
-    }
-
-
-def _run_pending_if_confirmed(response_text: str) -> bool:
-    """Handle a yes/no response for the queued action.
-
-    Returns True if the response was a valid confirmation (yes or no), False otherwise.
-    """
-    pending = st.session_state.get("pending_action")
-    if not pending:
-        return False
-
-    answer = response_text.strip().lower()
-    if answer not in {"yes", "y", "no", "n"}:
-        # Ask the user to answer explicitly.
-        with st.chat_message("assistant"):
-            st.markdown("Please reply with **yes** or **no** to continue the pending action.")
-        st.session_state.chat_messages.append(AIMessage(content="Please reply yes or no to continue."))
-        return True
-
-    if answer in {"no", "n"}:
-        msg = f"Canceled: {pending['label']}"
-        with st.chat_message("assistant"):
-            st.markdown(msg)
-        st.session_state.chat_messages.append(AIMessage(content=msg))
-        st.session_state.pop("pending_action", None)
-        return True
-
-    # User confirmed
-    with st.chat_message("assistant"):
-        st.markdown(f"Running: {pending['label']}")
-        with st.spinner("Executing requested analysis..."):
-            res = pending["fn"](**pending["kwargs"])
-    st.session_state.chat_messages.append(AIMessage(content=f"Started: {pending['label']}"))
-    st.session_state.pop("pending_action", None)
-    # Preserve last results for the result panel when _run_direct returns a dict
-    if isinstance(res, dict):
-        st.session_state["last_results"] = res
-    return True
-
-
 def _style():
     st.markdown(
         """

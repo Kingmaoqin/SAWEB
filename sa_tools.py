@@ -131,7 +131,9 @@ def run_survival_analysis(
     if dm is None:
         from sa_data_manager import get_shared_manager
 
-        dm = get_shared_manager()
+        # In background threads, allow reuse of the last loaded dataset; otherwise
+        # a fresh, empty manager is returned and we surface a clear error below.
+        dm = get_shared_manager(allow_global_fallback=True)
     else:
         # keep the global mirror warm for non-Streamlit threads
         from sa_data_manager import _remember_manager  # type: ignore
@@ -324,7 +326,7 @@ def get_data_summary() -> dict:
     if dm is None:
         from sa_data_manager import get_shared_manager
 
-        dm = get_shared_manager()
+        dm = get_shared_manager(allow_global_fallback=True)
     else:
         from sa_data_manager import _remember_manager  # type: ignore
 
