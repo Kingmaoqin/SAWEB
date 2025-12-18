@@ -3,6 +3,50 @@
 import pandas as pd
 from typing import Optional
 
+
+# Keep a module-level reference to the most recent manager so agent/tool threads
+# that don't have a ScriptRunContext can still access the uploaded data.
+_LAST_LOADED_MANAGER: "DataManager | None" = None
+
+
+def _remember_manager(dm: "DataManager") -> None:
+    global _LAST_LOADED_MANAGER
+    _LAST_LOADED_MANAGER = dm
+
+
+def get_shared_manager(*, allow_global_fallback: bool = False) -> "DataManager":
+    """Return the session manager when available.
+
+    A new ``DataManager`` is created for a fresh Streamlit session. Only when
+    ``allow_global_fallback`` is ``True`` (used by background threads lacking a
+    ScriptRunContext) do we reuse the last loaded manager. This avoids leaking a
+    previous user's dataset into a new session while still preserving access for
+    in-flight background tasks spawned by the same session.
+    """
+
+    try:
+        if hasattr(__import__("streamlit"), "session_state"):
+            import streamlit as st  # local import avoids hard dependency during tests
+
+            if "data_manager" in st.session_state:
+                dm = st.session_state["data_manager"]
+                _remember_manager(dm)
+                return dm
+
+            # Fresh session: create an isolated manager (do NOT reuse _LAST_LOADED_MANAGER).
+            st.session_state["data_manager"] = DataManager()
+            return st.session_state["data_manager"]
+    except Exception:
+        # When called from background threads there is no ScriptRunContext; fall back below.
+        pass
+
+    if allow_global_fallback and _LAST_LOADED_MANAGER is not None:
+        return _LAST_LOADED_MANAGER  # type: ignore[return-value]
+
+    # Background call without an active session and no prior manager: return a fresh one.
+    return DataManager()
+
+
 class DataManager:
     """A simple singleton-like class to manage the active dataset."""
 
@@ -24,6 +68,7 @@ class DataManager:
         self._data = data
         self._file_name = name
         self.current_file_name = name
+        _remember_manager(self)
 
     def get_data(self) -> Optional[pd.DataFrame]:
         """Retrieves the loaded DataFrame."""
@@ -65,6 +110,7 @@ class DataManager:
         for candidate in (tabular_df, image_df, sensor_df):
             if candidate is not None:
                 self._data = candidate
+                _remember_manager(self)
                 break
             # ``load_multimodal_data`` may not have a meaningful file name, so
             # we keep the previous one unless a new dataset is provided via

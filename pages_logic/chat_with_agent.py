@@ -59,6 +59,8 @@ def _context_string():
         "- If DATASET_LOADED is False, you MUST say the dataset is not loaded and ask the user to upload a CSV on the right panel.\n"
         "- Never claim to have inspected or loaded data unless DATASET_LOADED is True.\n"
         "- When the user requests an algorithm, select from TEXGISA, CoxTime, DeepSurv, or DeepHit and confirm the time/event columns.\n"
+        "- Before executing training or preview runs, explicitly ask the user to reply 'yes' or 'no'. Only proceed after they answer.\n"
+        "- Always confirm which columns represent time and event; propose guesses from COLUMNS and let the user override.\n"
         "- Prefer the preview/train/run shortcuts when the user wants quick execution; otherwise ask for the time/event columns explicitly.\n"
         "ALGORITHMS:\n"
         + "\n".join(algo_lines)
@@ -69,8 +71,56 @@ def _context_string():
 def _ensure_data_manager():
     """Make sure session has a shared DataManager instance."""
     if "data_manager" not in st.session_state:
-        from sa_data_manager import DataManager
-        st.session_state.data_manager = DataManager()
+        from sa_data_manager import get_shared_manager
+
+        st.session_state.data_manager = get_shared_manager()
+
+
+def _queue_confirmation(label: str, fn, kwargs: dict):
+    """Store a pending action that requires an explicit yes/no before execution."""
+    st.session_state["pending_action"] = {
+        "label": label,
+        "fn": fn,
+        "kwargs": kwargs,
+    }
+
+
+def _run_pending_if_confirmed(response_text: str) -> bool:
+    """Handle a yes/no response for the queued action.
+
+    Returns True if the response was a valid confirmation (yes or no), False otherwise.
+    """
+    pending = st.session_state.get("pending_action")
+    if not pending:
+        return False
+
+    answer = response_text.strip().lower()
+    if answer not in {"yes", "y", "no", "n"}:
+        # Ask the user to answer explicitly.
+        with st.chat_message("assistant"):
+            st.markdown("Please reply with **yes** or **no** to continue the pending action.")
+        st.session_state.chat_messages.append(AIMessage(content="Please reply yes or no to continue."))
+        return True
+
+    if answer in {"no", "n"}:
+        msg = f"Canceled: {pending['label']}"
+        with st.chat_message("assistant"):
+            st.markdown(msg)
+        st.session_state.chat_messages.append(AIMessage(content=msg))
+        st.session_state.pop("pending_action", None)
+        return True
+
+    # User confirmed
+    with st.chat_message("assistant"):
+        st.markdown(f"Running: {pending['label']}")
+        with st.spinner("Executing requested analysis..."):
+            res = pending["fn"](**pending["kwargs"])
+    st.session_state.chat_messages.append(AIMessage(content=f"Started: {pending['label']}"))
+    st.session_state.pop("pending_action", None)
+    # Preserve last results for the result panel when _run_direct returns a dict
+    if isinstance(res, dict):
+        st.session_state["last_results"] = res
+    return True
 
 
 def _style():
@@ -430,6 +480,8 @@ def show():
         st.session_state.chat_messages = []
     if "chat_greeted" not in st.session_state:
         st.session_state.chat_greeted = False
+    if "pending_action" not in st.session_state:
+        st.session_state.pending_action = None
 
     # ---- data uploader (RIGHT column) ----
     left, right = st.columns([0.68, 0.32], gap="large")
@@ -481,6 +533,10 @@ def show():
     with left:
         _render_history(st.session_state.chat_messages)
 
+        pending = st.session_state.get("pending_action")
+        if pending:
+            st.warning(f"Pending confirmation: {pending['label']}. Reply 'yes' or 'no' to proceed.")
+
         # Quick chips (only meaningful after data is present)
         st.markdown("### ⚡ Quick Actions")
         with st.container():
@@ -494,19 +550,28 @@ def show():
             with cols_qa[0]:
                 if st.button("Run TEXGISA (no expert)", use_container_width=True, disabled=not has_data):
                     t = tcol or "duration"; e = ecol or "event"
-                    _run_direct("TEXGISA", t, e, epochs=120, include_importance=False)
+                    label = f"Run TEXGISA (time={t}, event={e}, epochs=120)"
+                    _queue_confirmation(label, _run_direct, {"algorithm_name": "TEXGISA", "time_col": t, "event_col": e, "epochs": 120, "include_importance": False})
+                    prompt = f"About to {label}. Reply **yes** to proceed or **no** to cancel."
+                    st.session_state.chat_messages.append(AIMessage(content=prompt))
             with cols_qa[1]:
                 if st.button("Run CoxTime", use_container_width=True, disabled=not has_data):
                     t = tcol or "duration"; e = ecol or "event"
-                    _run_direct("CoxTime", t, e, epochs=120)
+                    label = f"Run CoxTime (time={t}, event={e}, epochs=120)"
+                    _queue_confirmation(label, _run_direct, {"algorithm_name": "CoxTime", "time_col": t, "event_col": e, "epochs": 120})
+                    st.session_state.chat_messages.append(AIMessage(content=f"About to {label}. Reply yes or no."))
             with cols_qa[2]:
                 if st.button("Run DeepSurv", use_container_width=True, disabled=not has_data):
                     t = tcol or "duration"; e = ecol or "event"
-                    _run_direct("DeepSurv", t, e, epochs=120)
+                    label = f"Run DeepSurv (time={t}, event={e}, epochs=120)"
+                    _queue_confirmation(label, _run_direct, {"algorithm_name": "DeepSurv", "time_col": t, "event_col": e, "epochs": 120})
+                    st.session_state.chat_messages.append(AIMessage(content=f"About to {label}. Reply yes or no."))
             with cols_qa[3]:
                 if st.button("Run DeepHit", use_container_width=True, disabled=not has_data):
                     t = tcol or "duration"; e = ecol or "event"
-                    _run_direct("DeepHit", t, e, epochs=120)
+                    label = f"Run DeepHit (time={t}, event={e}, epochs=120)"
+                    _queue_confirmation(label, _run_direct, {"algorithm_name": "DeepHit", "time_col": t, "event_col": e, "epochs": 120})
+                    st.session_state.chat_messages.append(AIMessage(content=f"About to {label}. Reply yes or no."))
             st.markdown('</div>', unsafe_allow_html=True)
 
         # handle injected quick action
@@ -521,6 +586,13 @@ def show():
             text = user_text.strip()
             low = text.lower()
 
+            handled = False
+
+            # Handle yes/no for any pending action first
+            if st.session_state.get("pending_action"):
+                if _run_pending_if_confirmed(text):
+                    handled = True
+
             # 取列名猜测
             stt = _dataset_state()
             t_guess = "duration" if "duration" in stt["cols"] else (stt["cols"][0] if stt["cols"] else "duration")
@@ -533,15 +605,15 @@ def show():
                 return cast(m.group(1)) if m else default
 
             # 专门支持“看我数据叫什么名”的小问题（不用 LLM，直接查）
-            if re.search(r"(dataset).*name|name.*(dataset)", low):
+            if not handled and re.search(r"(dataset).*name|name.*(dataset)", low):
                 name = _dataset_state()["name"] or "No dataset loaded"
                 with st.chat_message("assistant"):
                     st.markdown(f"Current dataset: **{name}**")
                 st.session_state.chat_messages.append(AIMessage(content=f"Current dataset: {name}"))
-                st.stop()
+                handled = True
 
             # -------- 轻量命令：直接跑你的代码（不经 LLM） --------
-            if (
+            if not handled and (
                 low.startswith("preview")
                 or "preview_fi" in low
                 or "feature importance" in low
@@ -550,10 +622,12 @@ def show():
                 t = _get_arg(r"time(?:_col)?\s*=\s*([\w\.\-]+)", t_guess)
                 e = _get_arg(r"event(?:_col)?\s*=\s*([\w\.\-]+)", e_guess)
                 ep = _get_arg(r"epochs\s*=\s*(\d+)", 80, int)
-                _run_direct("TEXGISA", t, e, epochs=ep, preview=True, include_importance=False)
-                st.stop()
+                label = f"Preview TEXGISA feature importance (time={t}, event={e}, epochs={ep})"
+                _queue_confirmation(label, _run_direct, {"algorithm_name": "TEXGISA", "time_col": t, "event_col": e, "epochs": ep, "preview": True, "include_importance": False})
+                st.session_state.chat_messages.append(AIMessage(content=f"Queued: {label}. Reply yes or no to execute."))
+                handled = True
 
-            if (
+            if not handled and (
                 ("texgisa" in low or "texgi" in low)
                 and (
                     low.startswith("run")
@@ -565,12 +639,17 @@ def show():
                 t = _get_arg(r"time(?:_col)?\s*=\s*([\w\.\-]+)", t_guess)
                 e = _get_arg(r"event(?:_col)?\s*=\s*([\w\.\-]+)", e_guess)
                 ep = _get_arg(r"epochs\s*=\s*(\d+)", 150, int)
-                _run_direct("TEXGISA", t, e, epochs=ep, preview=False, include_importance=False)
-                st.stop()
+                label = f"Run TEXGISA (time={t}, event={e}, epochs={ep})"
+                _queue_confirmation(label, _run_direct, {"algorithm_name": "TEXGISA", "time_col": t, "event_col": e, "epochs": ep, "preview": False, "include_importance": False})
+                st.session_state.chat_messages.append(AIMessage(content=f"Queued: {label}. Reply yes to start or no to cancel."))
+                handled = True
 
-            # 其他自由文本 -> 走 LLM（但会被 B 步的上下文“约束”）
-            _process_user_text(text)
-            st.stop()
+            if handled:
+                st.session_state.chat_messages.append(HumanMessage(content=text))
+            else:
+                # 其他自由文本 -> 走 LLM（但会被 B 步的上下文“约束”）
+                _process_user_text(text)
+                st.stop()
 
 
 
@@ -604,16 +683,23 @@ def show():
 
                 submitted = st.form_submit_button("Run now")
                 if submitted:
-                    _run_direct(
-                        "TEXGISA" if algo.startswith("TEXGISA") else algo,
-                        time_col,
-                        event_col,
-                        epochs=epochs,
-                        lr=lr,
-                        batch_size=batch_size,
-                        preview=False,
-                        include_importance=False,
+                    algo_name = "TEXGISA" if algo.startswith("TEXGISA") else algo
+                    label = f"Run {algo_name} (time={time_col}, event={event_col}, epochs={epochs}, lr={lr}, batch={batch_size})"
+                    _queue_confirmation(
+                        label,
+                        _run_direct,
+                        {
+                            "algorithm_name": algo_name,
+                            "time_col": time_col,
+                            "event_col": event_col,
+                            "epochs": epochs,
+                            "lr": lr,
+                            "batch_size": batch_size,
+                            "preview": False,
+                            "include_importance": False,
+                        },
                     )
+                    st.session_state.chat_messages.append(AIMessage(content=f"About to {label}. Reply yes or no to continue."))
         else:
             st.info("Upload a CSV to enable direct runs.")
         st.markdown("</div>", unsafe_allow_html=True)
