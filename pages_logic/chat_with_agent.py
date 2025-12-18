@@ -60,6 +60,7 @@ def _context_string():
         "- Never claim to have inspected or loaded data unless DATASET_LOADED is True.\n"
         "- When the user requests an algorithm, select from TEXGISA, CoxTime, DeepSurv, or DeepHit and confirm the time/event columns.\n"
         "- Before executing training or preview runs, explicitly ask the user to reply 'yes' or 'no'. Only proceed after they answer.\n"
+        "- Always confirm which columns represent time and event; propose guesses from COLUMNS and let the user override.\n"
         "- Prefer the preview/train/run shortcuts when the user wants quick execution; otherwise ask for the time/event columns explicitly.\n"
         "ALGORITHMS:\n"
         + "\n".join(algo_lines)
@@ -584,10 +585,12 @@ def show():
             text = user_text.strip()
             low = text.lower()
 
+            handled = False
+
             # Handle yes/no for any pending action first
             if st.session_state.get("pending_action"):
                 if _run_pending_if_confirmed(text):
-                    st.stop()
+                    handled = True
 
             # 取列名猜测
             stt = _dataset_state()
@@ -601,15 +604,15 @@ def show():
                 return cast(m.group(1)) if m else default
 
             # 专门支持“看我数据叫什么名”的小问题（不用 LLM，直接查）
-            if re.search(r"(dataset).*name|name.*(dataset)", low):
+            if not handled and re.search(r"(dataset).*name|name.*(dataset)", low):
                 name = _dataset_state()["name"] or "No dataset loaded"
                 with st.chat_message("assistant"):
                     st.markdown(f"Current dataset: **{name}**")
                 st.session_state.chat_messages.append(AIMessage(content=f"Current dataset: {name}"))
-                st.stop()
+                handled = True
 
             # -------- 轻量命令：直接跑你的代码（不经 LLM） --------
-            if (
+            if not handled and (
                 low.startswith("preview")
                 or "preview_fi" in low
                 or "feature importance" in low
@@ -621,9 +624,9 @@ def show():
                 label = f"Preview TEXGISA feature importance (time={t}, event={e}, epochs={ep})"
                 _queue_confirmation(label, _run_direct, {"algorithm_name": "TEXGISA", "time_col": t, "event_col": e, "epochs": ep, "preview": True, "include_importance": False})
                 st.session_state.chat_messages.append(AIMessage(content=f"Queued: {label}. Reply yes or no to execute."))
-                st.stop()
+                handled = True
 
-            if (
+            if not handled and (
                 ("texgisa" in low or "texgi" in low)
                 and (
                     low.startswith("run")
@@ -638,11 +641,14 @@ def show():
                 label = f"Run TEXGISA (time={t}, event={e}, epochs={ep})"
                 _queue_confirmation(label, _run_direct, {"algorithm_name": "TEXGISA", "time_col": t, "event_col": e, "epochs": ep, "preview": False, "include_importance": False})
                 st.session_state.chat_messages.append(AIMessage(content=f"Queued: {label}. Reply yes to start or no to cancel."))
-                st.stop()
+                handled = True
 
-            # 其他自由文本 -> 走 LLM（但会被 B 步的上下文“约束”）
-            _process_user_text(text)
-            st.stop()
+            if handled:
+                st.session_state.chat_messages.append(HumanMessage(content=text))
+            else:
+                # 其他自由文本 -> 走 LLM（但会被 B 步的上下文“约束”）
+                _process_user_text(text)
+                st.stop()
 
 
 
