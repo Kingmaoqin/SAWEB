@@ -85,6 +85,18 @@ def _queue_confirmation(label: str, fn, kwargs: dict):
     }
 
 
+def _queue_and_prompt(label: str, fn, kwargs: dict, prompt: str, *, rerun: bool = False):
+    """Queue a confirmation request and immediately surface the prompt.
+
+    When rerun=True, the page reruns right away so the new assistant message and
+    pending warning are visible without needing additional user input.
+    """
+    _queue_confirmation(label, fn, kwargs)
+    st.session_state.chat_messages.append(AIMessage(content=prompt))
+    if rerun:
+        st.rerun()
+
+
 def _run_pending_if_confirmed(response_text: str) -> bool:
     """Handle a yes/no response for the queued action.
 
@@ -551,27 +563,47 @@ def show():
                 if st.button("Run TEXGISA (no expert)", use_container_width=True, disabled=not has_data):
                     t = tcol or "duration"; e = ecol or "event"
                     label = f"Run TEXGISA (time={t}, event={e}, epochs=120)"
-                    _queue_confirmation(label, _run_direct, {"algorithm_name": "TEXGISA", "time_col": t, "event_col": e, "epochs": 120, "include_importance": False})
                     prompt = f"About to {label}. Reply **yes** to proceed or **no** to cancel."
-                    st.session_state.chat_messages.append(AIMessage(content=prompt))
+                    _queue_and_prompt(
+                        label,
+                        _run_direct,
+                        {"algorithm_name": "TEXGISA", "time_col": t, "event_col": e, "epochs": 120, "include_importance": False},
+                        prompt,
+                        rerun=True,
+                    )
             with cols_qa[1]:
                 if st.button("Run CoxTime", use_container_width=True, disabled=not has_data):
                     t = tcol or "duration"; e = ecol or "event"
                     label = f"Run CoxTime (time={t}, event={e}, epochs=120)"
-                    _queue_confirmation(label, _run_direct, {"algorithm_name": "CoxTime", "time_col": t, "event_col": e, "epochs": 120})
-                    st.session_state.chat_messages.append(AIMessage(content=f"About to {label}. Reply yes or no."))
+                    _queue_and_prompt(
+                        label,
+                        _run_direct,
+                        {"algorithm_name": "CoxTime", "time_col": t, "event_col": e, "epochs": 120},
+                        f"About to {label}. Reply yes or no.",
+                        rerun=True,
+                    )
             with cols_qa[2]:
                 if st.button("Run DeepSurv", use_container_width=True, disabled=not has_data):
                     t = tcol or "duration"; e = ecol or "event"
                     label = f"Run DeepSurv (time={t}, event={e}, epochs=120)"
-                    _queue_confirmation(label, _run_direct, {"algorithm_name": "DeepSurv", "time_col": t, "event_col": e, "epochs": 120})
-                    st.session_state.chat_messages.append(AIMessage(content=f"About to {label}. Reply yes or no."))
+                    _queue_and_prompt(
+                        label,
+                        _run_direct,
+                        {"algorithm_name": "DeepSurv", "time_col": t, "event_col": e, "epochs": 120},
+                        f"About to {label}. Reply yes or no.",
+                        rerun=True,
+                    )
             with cols_qa[3]:
                 if st.button("Run DeepHit", use_container_width=True, disabled=not has_data):
                     t = tcol or "duration"; e = ecol or "event"
                     label = f"Run DeepHit (time={t}, event={e}, epochs=120)"
-                    _queue_confirmation(label, _run_direct, {"algorithm_name": "DeepHit", "time_col": t, "event_col": e, "epochs": 120})
-                    st.session_state.chat_messages.append(AIMessage(content=f"About to {label}. Reply yes or no."))
+                    _queue_and_prompt(
+                        label,
+                        _run_direct,
+                        {"algorithm_name": "DeepHit", "time_col": t, "event_col": e, "epochs": 120},
+                        f"About to {label}. Reply yes or no.",
+                        rerun=True,
+                    )
             st.markdown('</div>', unsafe_allow_html=True)
 
         # handle injected quick action
