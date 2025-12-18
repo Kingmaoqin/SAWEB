@@ -555,13 +555,45 @@ def show():
             st.markdown('<div class="chip-row">', unsafe_allow_html=True)
             summary = st.session_state.data_manager.get_data_summary()
             tcol, ecol = (None, None)
+            cols = []
             if "error" not in summary:
                 tcol, ecol = _guess_cols_from_summary(summary)
+                cols = summary.get("column_names", []) or []
+
+            # Allow the user to pick the time/event columns used by the quick buttons.
+            st.caption("Select time/event columns for quick runs and confirmations.")
+            qc1, qc2 = st.columns(2)
+            default_time = tcol or ("duration" if "duration" in cols else (cols[0] if cols else "duration"))
+            default_event = ecol or ("event" if "event" in cols else (cols[1] if len(cols) > 1 else default_time))
+
+            if "qa_time_col" not in st.session_state:
+                st.session_state.qa_time_col = default_time
+            if "qa_event_col" not in st.session_state:
+                st.session_state.qa_event_col = default_event
+
+            with qc1:
+                st.session_state.qa_time_col = st.selectbox(
+                    "Time column",
+                    options=cols or [default_time],
+                    index=(cols.index(st.session_state.qa_time_col)
+                           if cols and st.session_state.qa_time_col in cols else 0),
+                    key="qa_time_select",
+                )
+            with qc2:
+                st.session_state.qa_event_col = st.selectbox(
+                    "Event column",
+                    options=cols or [default_event],
+                    index=(cols.index(st.session_state.qa_event_col)
+                           if cols and st.session_state.qa_event_col in cols else 0),
+                    key="qa_event_select",
+                )
+
+            btn_disabled = not has_data or not st.session_state.qa_time_col or not st.session_state.qa_event_col
 
             cols_qa = st.columns(4)
             with cols_qa[0]:
-                if st.button("Run TEXGISA (no expert)", use_container_width=True, disabled=not has_data):
-                    t = tcol or "duration"; e = ecol or "event"
+                if st.button("Run TEXGISA (no expert)", use_container_width=True, disabled=btn_disabled):
+                    t = st.session_state.qa_time_col; e = st.session_state.qa_event_col
                     label = f"Run TEXGISA (time={t}, event={e}, epochs=120)"
                     prompt = f"About to {label}. Reply **yes** to proceed or **no** to cancel."
                     _queue_and_prompt(
@@ -572,8 +604,8 @@ def show():
                         rerun=True,
                     )
             with cols_qa[1]:
-                if st.button("Run CoxTime", use_container_width=True, disabled=not has_data):
-                    t = tcol or "duration"; e = ecol or "event"
+                if st.button("Run CoxTime", use_container_width=True, disabled=btn_disabled):
+                    t = st.session_state.qa_time_col; e = st.session_state.qa_event_col
                     label = f"Run CoxTime (time={t}, event={e}, epochs=120)"
                     _queue_and_prompt(
                         label,
@@ -583,8 +615,8 @@ def show():
                         rerun=True,
                     )
             with cols_qa[2]:
-                if st.button("Run DeepSurv", use_container_width=True, disabled=not has_data):
-                    t = tcol or "duration"; e = ecol or "event"
+                if st.button("Run DeepSurv", use_container_width=True, disabled=btn_disabled):
+                    t = st.session_state.qa_time_col; e = st.session_state.qa_event_col
                     label = f"Run DeepSurv (time={t}, event={e}, epochs=120)"
                     _queue_and_prompt(
                         label,
@@ -594,8 +626,8 @@ def show():
                         rerun=True,
                     )
             with cols_qa[3]:
-                if st.button("Run DeepHit", use_container_width=True, disabled=not has_data):
-                    t = tcol or "duration"; e = ecol or "event"
+                if st.button("Run DeepHit", use_container_width=True, disabled=btn_disabled):
+                    t = st.session_state.qa_time_col; e = st.session_state.qa_event_col
                     label = f"Run DeepHit (time={t}, event={e}, epochs=120)"
                     _queue_and_prompt(
                         label,
