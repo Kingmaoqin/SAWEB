@@ -29,7 +29,10 @@ def show():
     - ⚙️ **Algorithm Execution**: Run state-of-the-art survival models with configurable parameters
     - 📈 **Result Interpretation**: Understand outputs through explainable AI visualization
 
-    This app serves as both a research tool and educational platform for survival analytics.
+    This platform serves as both a research tool and educational platform for survival analytics.
+    It serves clinicians and researchers who need risk stratification, data scientists who compare algorithm performance and interpretability (CoxTime, DeepSurv, DeepHit, TEXGISA), 
+    educators who teach survival analysis workflows, and decision makers who rely on evidence‑based forecasts. Typical use cases include uploading follow‑up data to generate survival curves and C‑index results, 
+    enabling TEXGISA feature importance to identify clinical drivers of risk, comparing models across cohorts, and exporting visual reports for multidisciplinary review.
     """)
 
     st.markdown("""
@@ -101,3 +104,4 @@ def show():
     st.markdown("---")
 
     st.markdown("**Contact our team:** [xqin5@cougarnet.uh.edu](mailto:xqin5@cougarnet.uh.edu) | [Visit our website](https://)")
+
