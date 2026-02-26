@@ -30,4 +30,5 @@ requests==2.32.2
 pytest==8.2.2
 
 # Optional TEXGISA package backend (dual-path integration)
-texgisa-survival>=0.1.0
+# NOTE: not published on PyPI; install separately from GitHub when needed.
+# pip install "git+https://github.com/Kunjoe7/texgisa-survival.git@main"
