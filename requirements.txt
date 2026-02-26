@@ -28,3 +28,6 @@ huggingface_hub==0.23.1
 
 requests==2.32.2
 pytest==8.2.2
+
+# Optional TEXGISA package backend (install from GitHub; not published on PyPI)
+git+https://github.com/Kunjoe7/texgisa-survival.git@main
