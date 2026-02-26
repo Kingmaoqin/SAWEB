@@ -230,7 +230,14 @@ def run_texgisa_dual_backend(data: pd.DataFrame, config: Dict[str, Any]) -> Dict
         return result
 
     if backend == "package":
-        return _run_package_backend(data, config)
+        try:
+            return _run_package_backend(data, config)
+        except Exception as exc:
+            raise RuntimeError(
+                "Package backend selected but unavailable/failed. "
+                "Install texgisa-survival from GitHub or switch TEXGISA_BACKEND=internal. "
+                f"Original error: {exc}"
+            ) from exc
 
     # auto mode: prefer package and gracefully fall back to internal.
     try:

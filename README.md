@@ -16,3 +16,14 @@ export TEXGISA_BACKEND=internal   # or package / auto
 ```
 
 You can also pass `texgisa_backend` in the runtime config dictionary.
+
+## TEXGISA package backend installation note
+
+The `texgisa-survival` backend package is currently installed from GitHub (not PyPI) in this project:
+
+```
+git+https://github.com/Kunjoe7/texgisa-survival.git@main
+```
+
+If GitHub access is unavailable in your deployment environment, keep `TEXGISA_BACKEND=internal` to avoid package-mode startup/install issues.
+
