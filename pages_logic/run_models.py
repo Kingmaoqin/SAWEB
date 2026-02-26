@@ -21,7 +21,7 @@ from algorithm.CF import generate_cf_from_arrays
 from algorithm.texgi_cf import generate_texgi_counterfactuals
 
 from models import coxtime, deepsurv, deephit
-from models.mysa import run_mysa as run_texgisa
+from models.texgisa_backend import run_texgisa_dual_backend
 from utils.identifiers import canonicalize_series
 from html import escape
 
@@ -2900,13 +2900,13 @@ def run_analysis(algo: str, df: pd.DataFrame, config: dict):
     elif algo.startswith("deephit"):
         return _attach_risk_summary(deephit.run_deephit(df, config))
     elif "texgisa" in algo or "mysa" in algo:
-        if run_texgisa is None:
-            raise RuntimeError("TEXGISA not available. Please ensure models/mysa.py is present.")
+        if run_texgisa_dual_backend is None:
+            raise RuntimeError("TEXGISA backend not available. Please ensure backend modules are present.")
         cfg = dict(config)
         if "multimodal_sources" not in cfg:
             mm_sources = _build_multimodal_sources(cfg)
             if mm_sources is not None:
                 cfg["multimodal_sources"] = mm_sources
-        return _attach_risk_summary(run_texgisa(df, cfg))
+        return _attach_risk_summary(run_texgisa_dual_backend(df, cfg))
     else:
         raise ValueError(f"Unknown algorithm: {algo}")
