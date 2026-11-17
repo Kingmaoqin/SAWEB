@@ -25,6 +25,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("model", choices=["CoxTime", "DeepSurv", "DeepHit", "TEXGISA"])
     parser.add_argument("--cf", action="store_true")
+    parser.add_argument("--epochs", type=int, default=2)
     parser.add_argument("--mode", choices=["normal", "preview", "expert", "playback"], default="normal")
     args = parser.parse_args()
 
@@ -39,7 +40,7 @@ def main():
 
     widget(app, "selectbox", "Algorithm").set_value(args.model).run()
     require_clean(app, "select model")
-    widget(app, "number_input", "Epochs").set_value(2).run()
+    widget(app, "number_input", "Epochs").set_value(args.epochs).run()
     require_clean(app, "set epochs")
     if args.model == "TEXGISA":
         widget(app, "number_input", "Generator epochs").set_value(1).run()

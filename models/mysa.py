@@ -953,7 +953,8 @@ class MySATrainer:
             X = self._move_to_device(X)
             mask_t = modality_mask.to(self.device, non_blocking=True) if modality_mask is not None else None
             hazards = self._model_forward(X, mask_t)
-            risk = torch.sum(hazards, dim=1)  # simple risk proxy; larger -> earlier event
+            survival = torch.cumprod(1.0 - hazards, dim=1)
+            risk = -torch.sum(survival, dim=1)  # negative restricted mean survival; larger -> earlier event
             all_risk.append(risk.cpu())
         risks = torch.cat(all_risk, dim=0)
         return cindex_fast(durations, events, risks).item()
@@ -1060,6 +1061,11 @@ def _prepare_tabular_inputs(data: pd.DataFrame, config: Dict) -> Dict[str, Any]:
         depth=int(config.get("depth", 2)),
         dropout=float(config.get("dropout", 0.2)),
     )
+    # Fit input normalization on training patients only; keep raw feature units
+    # in the CSV and counterfactual controls. Buffers travel with model.pt.
+    with torch.no_grad():
+        model.input_mean.copy_(torch.tensor(X_tr.mean(axis=0), dtype=torch.float32))
+        model.input_std.copy_(torch.tensor(np.maximum(X_tr.std(axis=0), 1e-6), dtype=torch.float32))
 
     return {
         "train_loader": train_loader,
@@ -1736,6 +1742,7 @@ def _run_mysa_core(prepared: Dict[str, Any], config: Dict) -> Dict:
         )
 
     best = {"val_cindex": 0.0, "epoch": -1}
+    best_state = None
     epochs = int(config.get("epochs", 200))
     _update_progress(0.0)
     for ep in range(1, epochs + 1):
@@ -1763,7 +1770,8 @@ def _run_mysa_core(prepared: Dict[str, Any], config: Dict) -> Dict:
 
         if val_c > best["val_cindex"]:
             best = {"val_cindex": val_c, "epoch": ep}
-            torch.save(model.state_dict(), "model.pt")
+            best_state = {key: value.detach().cpu().clone() for key, value in model.state_dict().items()}
+            torch.save(best_state, "model.pt")
 
         print(
             f"[MySA] Ep{ep:03d}  NLL={lm:.4f}  Smooth={ls:.4f}  Expert={le:.4f}  | Val C-index={val_c:.4f}"
@@ -1772,6 +1780,8 @@ def _run_mysa_core(prepared: Dict[str, Any], config: Dict) -> Dict:
 
     _update_progress(1.0)
 
+    if best_state is not None:
+        model.load_state_dict(best_state)
     device = trainer.device
     model.eval()
     all_h = []
@@ -1833,7 +1843,7 @@ def _run_mysa_core(prepared: Dict[str, Any], config: Dict) -> Dict:
         "feature_names": feature_names,
     }
 
-    risk_scores = H_va.sum(axis=1)
+    risk_scores = -S_va.sum(axis=1)
     cf_features = pd.DataFrame(prepared["X_val"], columns=feature_names)
 
     return {
@@ -1842,6 +1852,8 @@ def _run_mysa_core(prepared: Dict[str, Any], config: Dict) -> Dict:
         "Num Bins": int(prepared["num_bins"]),
         "Val Samples": int(len(X_va)),
         "Surv_Test": surv_df,
+        "evaluation_durations": dur_va.detach().cpu().numpy(),
+        "evaluation_events": evt_va.detach().cpu().numpy(),
         "training_curve_history": curve_payload,
         "Feature Importance": fi_global,
         "Expert Rules Used": expert_rules or {},

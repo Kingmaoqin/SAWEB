@@ -150,7 +150,7 @@ def _explain_plot(kind: str, **kwargs) -> str:
 
         return (
             f"This figure shows model-predicted survival trajectories for {n} sampled individuals. "
-            "Each step down corresponds to a predicted event at that time bin; flatter lines indicate lower hazard. "
+            "Each step reflects the model’s estimated event probability during that interval; flatter lines indicate lower predicted hazard. "
             f"On average, the end-of-horizon survival is around {avg_last:.2f} "
             f"(range {smin:.2f}–{smax:.2f}). "
             "Large separation or crossings between curves suggest heterogeneity in patient risk, "
@@ -174,26 +174,21 @@ def _explain_plot(kind: str, **kwargs) -> str:
             "Step-downs occur at event times, and long flat segments reflect periods with censoring or no events. "
             f"At the last observed event time the survival probability is approximately {tail:.2f}. "
             f"{median_txt} "
-            "A long flat tail typically indicates substantial censoring late in follow-up."
+            "The curve describes observed follow-up, with censored records removed from the risk set at their last contact."
         )
 
     if kind == "km_groups":
-        S_end = np.asarray(kwargs.get("S_end", []), dtype=float)  # survival at horizon for each group
-        if S_end.size:
-            order = np.argsort(S_end)  # low S_end -> high risk
-            worst, best = int(order[0]) + 1, int(order[-1]) + 1
-            sep = float(np.nanmax(S_end) - np.nanmin(S_end))
-        else:
-            worst = best = None
-            sep = 0.0
-
-        return (
-            "Kaplan–Meier curves by risk groups illustrate how well the model separates patients. "
-            "Lower curves indicate higher risk. "
-            f"The spread between groups at the horizon is about {sep:.2f} in survival probability"
-            + (f" (worst ≈ group {worst}, best ≈ group {best}). " if worst and best else ". ")
-            + "Clear vertical separation suggests good discrimination; overlapping curves imply limited stratification."
-        )
+        S_end = np.asarray(kwargs.get("S_end", []), dtype=float)
+        horizon = kwargs.get("horizon")
+        names = ["lower", "middle", "higher"]
+        if S_end.size == 3 and np.isfinite(S_end).all():
+            values = ", ".join(f"{names[i]} risk {value:.2f}" for i, value in enumerate(S_end))
+            return (
+                f"At {horizon:.1f} units of follow-up, the observed survival probabilities are "
+                f"{values}. Groups were assigned using the model’s predictions for these "
+                "same evaluation patients; the Kaplan–Meier lines show their observed outcomes."
+            )
+        return "The lines compare observed survival among patients grouped by predicted risk."
 
     if kind == "fi_topk":
         # df: top-k rows with columns ['feature','importance', ('directional_mean'?)]
@@ -1064,19 +1059,22 @@ def _build_multimodal_sources(config: dict) -> Optional[Dict[str, Any]]:
 
 def _plot_survival_curves(surv_df: pd.DataFrame, max_lines: int = 5):
     st.subheader("Predicted Survival Trajectories")
-    fig, ax = plt.subplots(figsize=(10, 6))
-    # Draw up to max_lines curves for clarity
+    fig, ax = plt.subplots(figsize=(10, 5.4), facecolor="white")
+    ax.set_facecolor("white")
+    palette = ["#287E73", "#41658A", "#D17A43", "#715B9A", "#B65D6E"]
     cols = surv_df.columns[:max_lines]
-    for pid in cols:
-        ax.step(surv_df.index, surv_df[pid], where="post", label=str(pid))
-    ax.set_xlabel("Time Bin")
-    ax.set_ylabel("Survival Probability")
-    ax.set_ylim(0.0, 1.05)
+    for i, pid in enumerate(cols):
+        ax.step(surv_df.index, surv_df[pid], where="post", linewidth=2.3,
+                color=palette[i % len(palette)], label=f"Sample {i + 1}")
+    ax.set(xlabel="Follow-up time / model time bin", ylabel="Predicted survival probability")
+    ax.set_ylim(0, 1.03)
+    ax.grid(axis="y", color="#E7EAED", linewidth=0.8)
+    ax.spines[["top", "right"]].set_visible(False)
     if len(cols) > 1:
-        ax.legend(title="Sample", loc="best")
+        ax.legend(loc="lower left", frameon=False, ncol=min(len(cols), 3), fontsize=9)
+    fig.tight_layout()
     st.pyplot(fig)
-
-    # Textual explanation
+    plt.close(fig)
     try:
         last_vals = [float(surv_df[pid].iloc[-1]) for pid in cols]
     except Exception:
@@ -1438,71 +1436,74 @@ def _compute_km(durations, events, limit_to_last_event=True, bin_width=0):
 
 
 def _plot_km_overall(df, limit_to_last_event=True, bin_width=0):
-    import matplotlib.pyplot as plt
-    t, S = _compute_km(
-        df["duration"].values,
-        df["event"].values,
-        limit_to_last_event=limit_to_last_event,
-        bin_width=bin_width,
+    t, survival = _compute_km(
+        df["duration"].values, df["event"].values,
+        limit_to_last_event=limit_to_last_event, bin_width=bin_width,
     )
-    fig, ax = plt.subplots(figsize=(10, 6))
-    ax.step(t, S, where="post")
-    ax.set_xlabel("Time")
-    ax.set_ylabel("Survival Probability")
-    ax.set_title("Kaplan–Meier (overall)")
-    ax.set_ylim(0.0, 1.05)
+    fig, ax = plt.subplots(figsize=(10, 5.4), facecolor="white")
+    ax.set_facecolor("white")
+    ax.step(t, survival, where="post", linewidth=2.7, color="#41658A")
+    ax.set(xlabel="Follow-up time", ylabel="Observed survival probability",
+           title="Overall observed survival")
+    ax.set_ylim(0, 1.03)
+    ax.grid(axis="y", color="#E7EAED", linewidth=0.8)
+    ax.spines[["top", "right"]].set_visible(False)
+    fig.tight_layout()
     st.pyplot(fig)
-    # Textual explanation
-    _md_explain(_explain_plot("km_overall", t=t, S=S))
+    plt.close(fig)
+    _md_explain(_explain_plot("km_overall", t=t, S=survival))
 
 
-def _plot_km_by_risk(df, surv_df, n_groups=3, limit_to_last_event=True, bin_width=0):
-    import numpy as np, matplotlib.pyplot as plt
+def _plot_km_by_risk(df, surv_df, n_groups=3, limit_to_last_event=True, bin_width=0,
+                     evaluation_durations=None, evaluation_events=None):
+    """Plot observed outcomes for the exact patients whose risks were predicted."""
+    import numpy as np
+    import matplotlib.pyplot as plt
+
     if not isinstance(surv_df, pd.DataFrame) or surv_df.empty:
         st.info("No predictions available for risk stratification. Run a model first.")
         return
-    last_surv = surv_df.iloc[-1].values
-    risk = 1.0 - np.asarray(last_surv)
-
-    # Align indices with the prediction DataFrame when possible.
-    try:
-        cols = surv_df.columns
-        if np.issubdtype(np.array(cols).dtype, np.number):
-            idx = np.array(cols, dtype=int)
-        else:
-            idx = cols
-        durations = df.loc[idx, "duration"].values
-        events = df.loc[idx, "event"].values
-    except Exception:
-        durations = df["duration"].values[: len(risk)]
-        events = df["event"].values[: len(risk)]
-
-    q = np.quantile(risk, [1/3, 2/3])
+    if evaluation_durations is None or evaluation_events is None:
+        st.info("Matched evaluation outcomes are unavailable for this run.")
+        return
+    risk = 1.0 - np.asarray(surv_df.iloc[-1], dtype=float)
+    durations = np.asarray(evaluation_durations, dtype=float).reshape(-1)
+    events = np.asarray(evaluation_events, dtype=int).reshape(-1)
+    if len(risk) != len(durations) or len(risk) != len(events):
+        st.error("Prediction and evaluation sample counts do not match.")
+        return
+    q = np.quantile(risk, [1 / 3, 2 / 3])
     groups = np.digitize(risk, q, right=False)
 
-    fig, ax = plt.subplots(figsize=(10, 6))
-    S_end_per_group = []
+    fig, ax = plt.subplots(figsize=(10, 5.4), facecolor="white")
+    ax.set_facecolor("white")
+    palette = ["#287E73", "#41658A", "#D17A43"]
+    names = ["Lower predicted risk", "Middle predicted risk", "Higher predicted risk"]
+    group_curves = []
     for g in range(3):
-        mask = (groups == g)
-        if mask.sum() == 0:
+        mask = groups == g
+        if not mask.any():
             continue
-        t, S = _compute_km(
+        t, survival = _compute_km(
             durations[mask], events[mask],
-            limit_to_last_event=limit_to_last_event,
-            bin_width=bin_width
+            limit_to_last_event=limit_to_last_event, bin_width=bin_width,
         )
-        ax.step(t, S, where="post", label=f"Risk group {g+1}")
-        # record last survival for explanation
-        S_end_per_group.append(float(S[-1]) if len(S) else float("nan"))
-    ax.set_xlabel("Time")
-    ax.set_ylabel("Survival Probability")
-    ax.set_title("Kaplan–Meier by risk groups")
-    ax.set_ylim(0.0, 1.05)
-    ax.legend(loc="best")
+        ax.step(t, survival, where="post", color=palette[g], linewidth=2.6,
+                label=f"{names[g]}  ·  n={mask.sum()}")
+        group_curves.append((t, survival))
+    ax.set(xlabel="Follow-up time", ylabel="Observed survival probability",
+           title="Observed survival by predicted risk")
+    ax.set_ylim(0, 1.03)
+    ax.grid(axis="y", color="#E7EAED", linewidth=0.8)
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.legend(loc="upper right", frameon=False, fontsize=9)
+    fig.tight_layout()
     st.pyplot(fig)
-
-    # Textual explanation
-    _md_explain(_explain_plot("km_groups", S_end=S_end_per_group))
+    plt.close(fig)
+    horizon = min(float(t[-1]) for t, _ in group_curves if len(t))
+    S_at_horizon = [float(survival[max(0, np.searchsorted(t, horizon, side="right") - 1)])
+                    for t, survival in group_curves]
+    _md_explain(_explain_plot("km_groups", S_end=S_at_horizon, horizon=horizon))
 
 
 
@@ -2839,7 +2840,9 @@ def show():
             _plot_km_overall(df, limit_to_last_event=limit_to_last_event, bin_width=km_bin_width)
         elif chart_opt == "Kaplan–Meier by risk groups":
             _plot_km_by_risk(df, results.get("Surv_Test"), n_groups=3,
-                            limit_to_last_event=limit_to_last_event, bin_width=km_bin_width)
+                            limit_to_last_event=limit_to_last_event, bin_width=km_bin_width,
+                            evaluation_durations=results.get("evaluation_durations"),
+                            evaluation_events=results.get("evaluation_events"))
 
 
         # Feature importance

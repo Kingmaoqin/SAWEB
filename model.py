@@ -22,6 +22,8 @@ class MultiTaskModel(nn.Module):
         self.trunk = nn.Sequential(*layers)
         self.hazard_layer = nn.Linear(d, num_bins)
         self.num_bins = num_bins
+        self.register_buffer("input_mean", torch.zeros(input_dim))
+        self.register_buffer("input_std", torch.ones(input_dim))
         # Xavier init
         for m in self.modules():
             if isinstance(m, nn.Linear):
@@ -46,6 +48,7 @@ class MultiTaskModel(nn.Module):
             without re-running the model.
         """
 
+        x = (x - self.input_mean) / self.input_std
         h = self.trunk(x)
         logits = self.hazard_layer(h)
         hazards = torch.sigmoid(logits)
