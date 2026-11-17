@@ -74,7 +74,7 @@ def main():
         publications.show()
     elif current_page == "Chat with Agent":
         chat_with_agent.show()    
-    elif current_page == "Contact Us":
+    elif current_page == "Contact":
         contact.show()
 
     # 侧边栏只显示用户中心和设置，不再重复显示主导航
@@ -121,8 +121,8 @@ def main():
             )
             try:
                 from langchain_core.messages import AIMessage, HumanMessage
-                from sa_agent import sa_agent
-                resp = sa_agent.invoke({"messages": [AIMessage(content=help_ctx), HumanMessage(content=help_q.strip())]})
+                from sa_agent import create_sa_agent
+                resp = create_sa_agent().invoke({"messages": [AIMessage(content=help_ctx), HumanMessage(content=help_q.strip())]})
                 ans = None
                 for m in reversed(resp.get("messages", [])):
                     if isinstance(m, AIMessage):

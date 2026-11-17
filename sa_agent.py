@@ -65,9 +65,10 @@ def get_llm():
 
     def _first_token(possible_keys: list[str]):
         # Priority 1: Streamlit secrets
-        for key in possible_keys:
-            if key in st.secrets:
-                return st.secrets[key]
+        if st.secrets.load_if_toml_exists():
+            for key in possible_keys:
+                if key in st.secrets:
+                    return st.secrets[key]
 
         # Priority 2: Tokens stored in the current Streamlit session (e.g., set from a UI input)
         if hasattr(st, "session_state"):
@@ -332,5 +333,5 @@ def create_sa_agent():
     # Compile and return the agent
     return workflow.compile()
 
-# Create a single, importable instance of the agent
-sa_agent = create_sa_agent()
+# Build the agent when a chat action is requested. Importing this module must
+# not require credentials, since every page imports the chat UI at startup.

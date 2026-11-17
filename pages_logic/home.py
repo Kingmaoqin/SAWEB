@@ -103,5 +103,5 @@ def show():
     # Contact Section
     st.markdown("---")
 
-    st.markdown("**Contact our team:** [xqin5@cougarnet.uh.edu](mailto:xqin5@cougarnet.uh.edu) | [Visit our website](https://)")
+    st.markdown("**Contact our team:** [xqin5@cougarnet.uh.edu](mailto:xqin5@cougarnet.uh.edu)")
 

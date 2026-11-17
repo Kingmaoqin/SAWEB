@@ -11,7 +11,7 @@ import streamlit as st
 from langchain_core.messages import HumanMessage, AIMessage
 
 # project agent & tools
-from sa_agent import sa_agent
+from sa_agent import create_sa_agent
 from sa_tools import get_data_summary, run_survival_analysis
 
 ALGORITHM_GUIDE: Dict[str, Dict[str, str]] = {
@@ -226,7 +226,7 @@ def _process_user_text(user_text: str):
 
     with st.chat_message("assistant"):
         with st.spinner("Agent is thinking..."):
-            resp = sa_agent.invoke({"messages": history})
+            resp = create_sa_agent().invoke({"messages": history})
             ai_msg = None
             msgs = resp.get("messages", [])
             for m in reversed(msgs):

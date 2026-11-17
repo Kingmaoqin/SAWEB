@@ -10,6 +10,8 @@ scikit-learn==1.4.2
 torchtuples==0.2.2
 pycox==0.2.3
 lifelines==0.27.8
+# pycox 0.2.3 uses scipy.integrate.simps, removed in SciPy 1.14.
+scipy==1.13.1
 
 # Plotting / viz
 plotly==5.22.0

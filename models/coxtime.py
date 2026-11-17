@@ -12,6 +12,25 @@ ensure_pycox_writable()
 from pycox.evaluation import EvalSurv
 from pycox.models import CoxTime
 from pycox.models.cox_time import MLPVanillaCoxTime
+from pycox.models import data as pycox_data
+
+
+def _sample_alive_from_dates(dates, at_risk_dict, n_control=1):
+    """Sample controls without writing NaN into an integer array.
+
+    pycox 0.2.3 initialises this integer array with NaN, which raises a
+    ValueError with the NumPy version pinned by this application. Every entry
+    is assigned in the loop, so that initial fill is unnecessary.
+    """
+    lengths = np.array([at_risk_dict[t].shape[0] for t in dates])
+    positions = (np.random.uniform(size=(n_control, dates.size)) * lengths).astype(int)
+    sampled = np.empty((dates.size, n_control), dtype=int)
+    for row, time in enumerate(dates):
+        sampled[row, :] = at_risk_dict[time][positions[:, row]]
+    return sampled
+
+
+pycox_data.sample_alive_from_dates = _sample_alive_from_dates
 
 def run_coxtime(data, config):
     """
