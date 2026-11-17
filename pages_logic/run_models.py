@@ -1,8 +1,7 @@
 
 # run_models.py — MySA-integrated Workbench (drop-in replacement)
 # This page supports: CoxTime, DeepSurv, DeepHit, and MySA (TEXGISA).
-# - Adds two loss-weight sliders (lambda_smooth, lambda_expert)
-# - Adds an editable Expert Rules table (relation/sign/min_mag/weight) and an "Important set" selector
+# - Lets experts mark each feature as important or not important.
 # - Shows TEXGISA Feature Importance (Top-K + expand to all), and allows downloading time-dependent attributions.
 
 import streamlit as st
@@ -813,7 +812,7 @@ def _render_cf_block(results: dict):
     cf_mode = st.radio(
         "Counterfactual mode",
         ["Single patient feature changes", "Batch / whole cohort"],
-        help="选择为单个病人生成多条特征级别建议，或为所有病人批量生成基于区间的建议。",
+        help="Choose suggestions for one patient or generate a summary for the full evaluation cohort.",
         horizontal=True,
     )
     patient_choice = st.number_input("Select patient index", min_value=0, max_value=max(0, n_samples - 1), value=0, step=1)
@@ -826,7 +825,7 @@ def _render_cf_block(results: dict):
         min_value=1,
         max_value=5,
         value=5,
-        help="为该病人提供最多5条可操作特征调整建议。",
+        help="Show up to five reference-profile suggestions for this patient.",
     )
 
     placeholder = st.empty()
@@ -853,9 +852,9 @@ def _render_cf_block(results: dict):
                 use_container_width=True,
             )
         st.caption(
-            "特征级别CF会为单个病人给出最多5条可操作建议（来源于低风险近邻），批量模式则为每个病人生成1条区间层面的对策。"
-            "基础算法仍会先通过确定性缩放降低危险度，若受限则自动切换遗传算法兜底。"
-            "请结合风险分数与C-index共同解读，并与临床经验核对后再使用。"
+            "For one patient, suggestions show differences from similar records with lower predicted risk. "
+            "Batch mode summarizes one target per evaluation record. "
+            "The displayed hazard target comes from the counterfactual search."
         )
 HAS_MYSA = True
 
@@ -2208,7 +2207,7 @@ def show():
         st.markdown(
             "- Upload a CSV file with **duration** and **event** columns, plus features.\n"
             "- Select columns and model, set hyperparameters, and run.\n"
-            "- For **TEXGISA**, you can set **λ_smooth** and **λ_expert**, and edit **Expert Rules**."
+            "- For **TEXGISA**, mark the features that an expert considers important before training."
         )
 
     demo_path = Path(__file__).resolve().parents[1] / "demo_data" / "synthetic_survival_demo.csv"
@@ -2501,67 +2500,41 @@ def show():
 
     # ===================== 4) TEXGISA regularizers & expert rules ================
     if algo == "TEXGISA":
-        st.markdown("### Regularizers")
-        st.caption(_qhelp_md("texgisa_regularizers"))
-        r1, r2 = st.columns(2)
-        with r1:
-            lambda_smooth = field_with_help(
-                st.number_input, "λ_smooth (temporal smoothness)", "lambda_smooth",
-                0.0, 1.0, 0.01, step=0.01, format="%.2f"
-            )
-        with r2:
-            lambda_expert = field_with_help(
-                st.number_input, "λ_expert (expert prior penalty)", "lambda_expert",
-                0.0, 10.0, 0.10, step=0.05, format="%.2f"
-            )
-
-        st.markdown("### Expert Guidance")
-        st.caption(_qhelp_md("texgisa_guidance"))
-        # Important set I selector
-        prev_imp = st.session_state.get("important_features", [])
-        default_imp = [f for f in prev_imp if f in features]
-        important_features = st.multiselect(
-            "Important features (set I)",
-            options=features,
-            default=default_imp,
-            key="important_features_selector",
-            help=_qhelp_md("important_features"),
-        )
-        st.session_state["important_features"] = important_features
-
+        st.markdown("### Expert feature guidance")
         st.caption(
-            "Features in set I are protected by the expert penalty; other features are softly suppressed unless justified by TEXGISA."
+            "For each feature, mark whether the expert considers it important. "
+            "Selected features receive emphasis during TEXGISA training."
         )
-
-        st.markdown("#### Directional / magnitude constraints (optional)")
-        st.caption(_qhelp_md("texgisa_constraints"))
-        st.caption(
-            "The current release only supports encouraging minimum magnitude per feature. "
-        )
-
-        # Seed table with a few editable rows prioritising expert-marked features
-        base_rows = list(dict.fromkeys(important_features))
-        if not base_rows:
-            base_rows = [features[0]] if features else []
-        while len(base_rows) < 5:
-            base_rows.append("")
-
-        seed = pd.DataFrame({
-            "feature": base_rows,
-            "importance_floor": [0.0] * len(base_rows),
-            "weight": [1.0] * len(base_rows),
+        feature_signature = tuple(features)
+        if st.session_state.get("_expert_feature_signature") != feature_signature:
+            st.session_state.pop("expert_feature_importance", None)
+            st.session_state["_expert_feature_signature"] = feature_signature
+        previous = set(st.session_state.get("important_features", []))
+        importance_table = pd.DataFrame({
+            "Feature": features,
+            "Important": [feature in previous for feature in features],
         })
-        edited = st.data_editor(
-            seed,
+        edited_importance = st.data_editor(
+            importance_table,
             column_config={
-                "feature": st.column_config.SelectboxColumn("feature", options=features, help="Choose a feature"),
-                "importance_floor": st.column_config.NumberColumn("minimum TEXGISA magnitude", step=0.01, format="%.3f"),
-                "weight": st.column_config.NumberColumn("penalty weight", step=0.1, format="%.2f"),
+                "Feature": st.column_config.TextColumn("Feature", disabled=True),
+                "Important": st.column_config.CheckboxColumn("Important", help="Check if this feature is important."),
             },
-            num_rows="dynamic",
+            disabled=["Feature"],
+            hide_index=True,
             use_container_width=True,
+            key="expert_feature_importance",
         )
-        expert_rules = _build_expert_rules_from_editor(edited, important_features)
+        important_features = edited_importance.loc[
+            edited_importance["Important"].fillna(False), "Feature"
+        ].astype(str).tolist()
+        st.session_state["important_features"] = important_features
+        expert_rules = {"important_features": important_features, "rules": []}
+        # Keep guidance strength consistent across runs; disable it when none
+        # of the features is marked important.
+        lambda_smooth = 0.01
+        lambda_expert = 0.10 if important_features else 0.0
+        st.caption(f"{len(important_features)} of {len(features)} features marked important.")
 
         # Advanced TEXGISA/Generator controls
         advanced_box = st.expander("Advanced TEXGISA / Generator settings", expanded=False)
@@ -2671,25 +2644,25 @@ def show():
         c_run1, c_run2, c_run3 = st.columns(3)
         with c_run1:
             preview_clicked = st.button(
-                "👀 Preview Feature Importance (no expert priors)",
+                "👀 Preview Feature Importance",
                 use_container_width=True,
                 help="Run a short TEXGISA pass (λ_expert=0) to preview TEXGISA feature importance (powered by TEXGISA) before full training.",
             )
         with c_run2:
             train_clicked = st.button(
-                "🚀 Train with Expert Priors",
+                "🚀 Train TEXGISA",
                 use_container_width=True,
-                help="Train TEXGISA with the configured expert rules and λ_expert penalty (fast path without hazard playback).",
+                help="Train TEXGISA using the features marked Important; playback is available separately.",
             )
             st.caption("Fastest training path – skips per-epoch curve capture.")
             fast_expert = st.checkbox(
-                "Fast expert mode (lighter generator & TEXGISA importance)",
+                "Fast training mode",
                 value=True,
                 help=_qhelp_md("fast_mode"),
             )
         with c_run3:
             train_with_playback_clicked = st.button(
-                "🎬 Train + Hazard Playback",
+                "🎬 Train with Playback",
                 use_container_width=True,
                 help="Train TEXGISA and capture per-epoch hazard/survival curves for the playback widget (runs longer).",
             )
@@ -2725,7 +2698,7 @@ def show():
                 st.error(f"Preview failed: {e}")
 
     if train_clicked:
-        with st.spinner("Training with expert priors..."):
+        with st.spinner("Training TEXGISA..."):
             try:
                 # Create a shallow copy of the configuration so we can adjust preview-specific knobs.
                 cfg = dict(config)

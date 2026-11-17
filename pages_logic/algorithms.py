@@ -82,12 +82,9 @@ The training objective adds two regularizers to the negative log-likelihood (NLL
         """
 1. **Upload & map columns**: choose *duration* (time), *event* (0/1), and *features*.  
 2. **Preview FI (no priors)**: run a quick TEXGISA preview to see top-k features; sanity-check directions.
-3. **Set priors**: in *Expert Rules*, mark important features (and direction if applicable), adjust per-feature **weight**.  
-4. **Tune regularizers**:  
-   - `λ_smooth` (temporal smoothness on attributions): typical `0.005–0.05`.  
-   - `λ_expert` (overall strength of expert prior panel): start `0.05–0.2`.  
-5. **Advanced TEXGISA / generator** (optional): adjust `τ` (tail probability), IG `steps (M)`, and extreme generator capacity (fast mode for speed).
-6. **Train with priors**: monitor C-index; use KM plots (overall/groups) and predicted trajectories to validate risk stratification. :contentReference[oaicite:8]{index=8}
+3. **Mark important features**: in *Model Training*, check **Important** for each expert-prioritized feature.
+4. **Train with expert guidance**: the app applies the expert setting automatically.
+5. **Review the results**: compare C-index, survival curves, risk groups, and feature importance.
         """
     )
 
@@ -107,8 +104,8 @@ The training objective adds two regularizers to the negative log-likelihood (NLL
     st.markdown(
         """
 - Start with modest intervals, then increase bins if trajectories look too coarse.  
-- If FI looks noisy across time, increase `λ_smooth`.  
-- If domain-critical features are undervalued, increase `λ_expert` and/or their row weight in the Expert Rules table.  
+- Compare feature importance over time to see whether the selected features remain influential.
+- If an important feature is missing, mark it **Important** and retrain.
 - For preview speed, enable *fast expert mode*; for final training, use full generator & larger `M` for TEXGISA. :contentReference[oaicite:10]{index=10}
         """
     )
@@ -482,7 +479,7 @@ def show():
                     st.subheader("How-To Guide")
                     st.markdown("""
                     1.  **Data Preparation**: Format data with columns for time-to-event, event status, and covariates. Discretize the time axis into intervals.
-                    2.  **Define Expert Priors**: In the 'Expert Priors' tab, specify features known to be important and assign weights to guide the model's attention.
+                    2.  **Define Expert Priors**: In Model Training, check **Important** for features identified by the expert.
                     3.  **Train Model**: Run the training script. The loss function will include terms for prediction accuracy, smoothness, and adherence to expert priors.
                     4.  **Generate Explanations**: Use the TEXGISA module post-training to compute feature importance scores for individual predictions across time intervals.
                     5.  **Interpret Results**: Analyze the model's C-index, loss curves, and the time-aware feature importance plots to gain clinical insights.
@@ -521,9 +518,9 @@ def show():
                     st.markdown(
                         """
                         This feature allows you to inject domain knowledge directly into the model.
-                        - **Mark domain-important features** in your configuration (e.g., a simple table or dictionary) and assign positive **weights** to them.
-                        - **Gradually increase `λ_expert`**: This hyperparameter controls the strength of the expert prior. Start small and increase it to pull the model's learned attributions for those features towards a higher value (a soft constraint).
-                        - **Penalize unimportant features**: You can also assign negative priors to features expected to be irrelevant, encouraging sparsity in explanations.
+                        - **Check Important** beside each feature the expert considers important.
+                        - The app applies a consistent guidance strength automatically when at least one feature is selected.
+                        - Unchecked features receive less emphasis relative to the selected features.
                         """
                     )
 
@@ -531,9 +528,9 @@ def show():
                     st.subheader("Frequently Asked Questions")
                     st.markdown(
                         """
-                        **Q. Our feature importance (FI) directions (positive/negative impact) seem counter-intuitive. What should we do?** A. First, re-check your feature scaling and column mapping. If a feature's impact still disagrees with domain knowledge, consider increasing its `λ_expert` weight in the expert priors to guide the model correctly.
+                        **Q. Our feature importance (FI) directions (positive/negative impact) seem counter-intuitive. What should we do?** A. First, re-check your feature scaling and column mapping. If a feature's impact still disagrees with domain knowledge, review which features are marked **Important**, then retrain.
 
-                        **Q. Kaplan-Meier curves for different risk groups predicted by the model overlap significantly.** A. This may indicate the model isn't distinguishing risk well. Try using stronger expert priors, increasing the number of time intervals, or inspecting the feature importances to see which features are failing to drive risk separation.
+                        **Q. Kaplan-Meier curves for different risk groups predicted by the model overlap significantly.** A. This may indicate the model isn't distinguishing risk well. Review the selected important features, adjust the number of time intervals, and inspect feature importance to see which features are failing to drive risk separation.
 
                         **Q. The Concordance-index (C-index) is plateauing during training.** A. Try a more aggressive learning rate schedule (e.g., a higher initial rate followed by decay). Alternatively, moderately increase model capacity (more layers/neurons) or the number of time bins if your data has sufficient granularity.
                         """
@@ -591,7 +588,7 @@ def show():
                 coxtime = _badge(False, "No native prior channel besides regularization."),
                 deepsurv= _badge(False, "No built-in prior mechanism."),
                 deephit = _badge(False, "No built-in prior mechanism."),
-                texgisa = _badge(True,  "Supports explicit expert priors (rules/weights) via λ_expert during training."),
+                texgisa = _badge(True,  "Experts mark each feature as important or not important before training."),
                 explain="Whether domain priors (e.g., monotonicity, signed rules) can be injected to guide learning."
             ),
         ]

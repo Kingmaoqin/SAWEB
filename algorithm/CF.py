@@ -90,15 +90,16 @@ def _feature_change_suggestions(
             diff = neighbor_raw - feature_df.iloc[idx]
             non_zero = diff.replace(0.0, np.nan).dropna()
             if non_zero.empty:
-                text = "已找到风险更低的相似病例；保持当前方案并加强随访。"
+                text = "A similar record with lower predicted risk was found; no feature difference was available."
             else:
-                top_feats = non_zero.abs().sort_values(ascending=False).head(3)
+                top_features = non_zero.abs().sort_values(ascending=False).head(3).index
                 parts = []
-                for feat, delta in top_feats.items():
+                for feat in top_features:
+                    delta = float(non_zero.loc[feat])
                     new_val = feature_df.loc[idx, feat] + delta
-                    direction = "降低" if delta < 0 else "提高"
-                    parts.append(f"将 {feat} {direction}到 {new_val:.3f} (Δ {delta:+.3f})")
-                text = "；".join(parts)
+                    direction = "decrease" if delta < 0 else "increase"
+                    parts.append(f"{direction.capitalize()} {feat} to {new_val:.3f} (change {delta:+.3f})")
+                text = "; ".join(parts)
 
             patient_suggestions.append(
                 {
@@ -260,7 +261,7 @@ def generate_cf_from_arrays(
         top_features = ""
         if feature_names:
             feats = ", ".join(feature_names[:3]) if len(feature_names) >= 3 else ", ".join(feature_names)
-            top_features = f" 优先关注: {feats}."
+            top_features = f" Reference features: {feats}."
 
         t_int = int(interval_idx[i] + 1)
         feature_rec_list = feature_cf.get(i) or [
@@ -269,7 +270,7 @@ def generate_cf_from_arrays(
                 "reference_id": None,
                 "current_risk": base_risk,
                 "reference_risk": base_risk,
-                "suggested_changes": "未找到更低风险的相似样本，建议结合医生经验制定个性化方案。",
+                "suggested_changes": "No comparable record with lower predicted risk was found.",
             }
         ]
 
@@ -290,9 +291,9 @@ def generate_cf_from_arrays(
                     "reference_risk": rec.get("reference_risk"),
                     "suggested_changes": rec.get("suggested_changes", ""),
                     "action": (
-                        f"期望延长生存约 {desired_extension:.1f} 个时间单位；"
-                        f"在区间 {t_int} 处收紧危险度，可将累计风险由 {base_ch:.3f} 下调到 {achieved_ch:.3f}。"
-                        "可尝试加强随访频率、监测症状和依从性管理，若仍不足则考虑多因素联合干预。"
+                        f"Model target: extend survival by {desired_extension:.1f} time units; "
+                        f"at interval {t_int}, reduce cumulative hazard from {base_ch:.3f} "
+                        f"to {achieved_ch:.3f}."
                         + top_features
                     ),
                 }

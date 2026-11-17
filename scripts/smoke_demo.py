@@ -48,10 +48,10 @@ def main():
         widget(app, "checkbox", "Show animation during training (slower)").set_value(False).run()
         require_clean(app, "disable animation")
         button = {
-            "preview": "👀 Preview Feature Importance (no expert priors)",
-            "expert": "🚀 Train with Expert Priors",
-            "playback": "🎬 Train + Hazard Playback",
-            "normal": "🚀 Train with Expert Priors",
+            "preview": "👀 Preview Feature Importance",
+            "expert": "🚀 Train TEXGISA",
+            "playback": "🎬 Train with Playback",
+            "normal": "🚀 Train TEXGISA",
         }[args.mode]
     else:
         button = f"🚀 Train {args.model}"
