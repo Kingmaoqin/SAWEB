@@ -114,28 +114,8 @@ def main():
             ask = st.form_submit_button("Ask")
         if ask and help_q.strip():
             st.session_state.help_messages.append(("user", help_q.strip()))
-            # build a strict system context: no tool calls, only guidance & knowledge
-            help_ctx = (
-                "[HELP_MODE]\n"
-                "Your role: On-screen help assistant for the Survival Analysis platform.\n"
-                "Answer questions about: using the UI, uploading/mapping data, meanings of metrics (C-index), and algorithm differences "
-                "(CoxTime / DeepSurv / DeepHit / TEXGISA). "
-                "You MUST NOT claim to have run any analysis or accessed any dataset; do NOT call tools; "
-                "keep answers concise with step-by-step guidance when relevant."
-            )
-            try:
-                from langchain_core.messages import AIMessage, HumanMessage
-                from sa_agent import create_sa_agent
-                resp = create_sa_agent().invoke({"messages": [AIMessage(content=help_ctx), HumanMessage(content=help_q.strip())]})
-                ans = None
-                for m in reversed(resp.get("messages", [])):
-                    if isinstance(m, AIMessage):
-                        ans = m.content
-                        break
-                if ans is None:
-                    ans = "I'm here to help with the UI and algorithm basics. Could you rephrase your question?"
-            except Exception as e:
-                ans = f"(fallback) {e}"
+            from utils.help_bot import answer
+            ans = answer(help_q)
             st.session_state.help_messages.append(("assistant", ans))
             st.rerun()
 

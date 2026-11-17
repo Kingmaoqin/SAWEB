@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
+import io
 import json
 import re
+from pathlib import Path
 from typing import List, Optional, Dict, Any
 
 import pandas as pd
@@ -11,13 +14,12 @@ import streamlit as st
 from langchain_core.messages import HumanMessage, AIMessage
 
 # project agent & tools
-from sa_agent import create_sa_agent
-from sa_tools import get_data_summary, run_survival_analysis
+from sa_tools import get_data_summary, run_survival_analysis, compare_algorithms
 
 ALGORITHM_GUIDE: Dict[str, Dict[str, str]] = {
     "TEXGISA": {
-        "summary": "Multimodal survival analysis with TEXGISA explanations and optional expert priors.",
-        "best_for": "multimodal data, expert priors, attribution reporting",
+        "summary": "Discrete-time survival analysis with time-aware feature explanations.",
+        "best_for": "time-aware attribution reporting",
     },
     "CoxTime": {
         "summary": "Neural Cox model that captures time-varying effects.",
@@ -28,8 +30,8 @@ ALGORITHM_GUIDE: Dict[str, Dict[str, str]] = {
         "best_for": "non-linear risk patterns",
     },
     "DeepHit": {
-        "summary": "Neural model designed for competing risks scenarios.",
-        "best_for": "multiple event types",
+        "summary": "Neural model predicting survival across discrete time intervals.",
+        "best_for": "non-linear time-to-event patterns",
     },
 }
 
@@ -122,16 +124,18 @@ def _run_pending_if_confirmed(response_text: str) -> bool:
         st.session_state.pop("pending_action", None)
         return True
 
-    # User confirmed
-    with st.chat_message("assistant"):
-        st.markdown(f"Running: {pending['label']}")
-        with st.spinner("Executing requested analysis..."):
-            res = pending["fn"](**pending["kwargs"])
-    st.session_state.chat_messages.append(AIMessage(content=f"Started: {pending['label']}"))
+    # User confirmed. Keep the page usable if a model rejects the selected data.
     st.session_state.pop("pending_action", None)
-    # Preserve last results for the result panel when _run_direct returns a dict
-    if isinstance(res, dict):
-        st.session_state["last_results"] = res
+    try:
+        with st.spinner("Running the selected analysis..."):
+            result = pending["fn"](**pending["kwargs"])
+        message = f"Completed: {pending['label']}"
+        if isinstance(result, dict):
+            st.session_state["last_results"] = result
+    except Exception as exc:
+        message = f"The analysis could not finish: {exc}"
+        st.error(message)
+    st.session_state.chat_messages.append(AIMessage(content=message))
     return True
 
 
@@ -141,10 +145,10 @@ def _style():
         <style>
         .block-container { padding-top: 1.2rem; padding-bottom: 2rem; }
         .side-card { 
-            border: 1px solid rgba(255,255,255,0.12);
+            border: 1px solid #d1d5db;
             border-radius: 12px; 
             padding: 0.9rem 1.0rem; 
-            background: rgba(255,255,255,0.03);
+            background: #f8fafc;
         }
         .chip-row {
             display: flex;
@@ -158,16 +162,16 @@ def _style():
             border-radius: 999px;
             padding: 0.42rem 0.9rem;
             font-size: 0.9rem;
-            border: 1px solid rgba(255,255,255,0.12);
-            background: rgba(255,255,255,0.04);
+            border: 1px solid #d1d5db;
+            background: #f8fafc;
         }
-        .chip-row .stButton>button:hover { background: rgba(255,255,255,0.08); }
+        .chip-row .stButton>button:hover { background: #e5e7eb; }
         .stChatMessage { margin-bottom: 0.6rem; }
         .result-card {
-            border: 1px solid rgba(255,255,255,0.12);
+            border: 1px solid #d1d5db;
             border-radius: 14px;
             padding: 1.2rem 1.4rem;
-            background: rgba(255,255,255,0.02);
+            background: #ffffff;
             margin-top: 1.2rem;
         }
         </style>
@@ -210,35 +214,63 @@ def _inject_user(text: str):
 
 
 def _process_user_text(user_text: str):
-    """Append user message, then call agent ONCE with a prefixed context message."""
+    """Answer questions locally, with optional Groq for open-ended wording."""
+    from utils.help_bot import answer
+
     st.session_state.chat_messages.append(HumanMessage(content=user_text))
-    with st.chat_message("user"):
-        st.markdown(user_text)
-
-    # prepend a context message (NOT added to history)
-    ctx = AIMessage(content=_context_string())
-    history = st.session_state.chat_messages[:]          # copy
-    # 调用时把“上下文”插在最后一条 HumanMessage 前面
-    if history and isinstance(history[-1], HumanMessage):
-        history = history[:-1] + [ctx, history[-1]]
-    else:
-        history = [ctx] + history
-
+    response = answer(user_text)
+    st.session_state.chat_messages.append(AIMessage(content=response))
     with st.chat_message("assistant"):
-        with st.spinner("Agent is thinking..."):
-            resp = create_sa_agent().invoke({"messages": history})
-            ai_msg = None
-            msgs = resp.get("messages", [])
-            for m in reversed(msgs):
-                if isinstance(m, AIMessage):
-                    ai_msg = m
-                    break
-            if ai_msg is None:
-                content = json.dumps(resp, ensure_ascii=False) if isinstance(resp, dict) else str(resp)
-                ai_msg = AIMessage(content=content)
-            st.markdown(ai_msg.content)
-    st.session_state.chat_messages.append(ai_msg)
+        st.markdown(response)
 
+
+def _reply(text: str):
+    st.session_state.chat_messages.append(AIMessage(content=text))
+    with st.chat_message("assistant"):
+        st.markdown(text)
+
+
+def _queue_model_from_text(text: str, summary: dict) -> bool:
+    """Parse run/preview commands without depending on a hosted model."""
+    lower = text.lower()
+    preview = lower.startswith("preview") or "preview_fi" in lower
+    model = next((name for name in ("CoxTime", "DeepSurv", "DeepHit", "TEXGISA")
+                  if name.lower() in lower), None)
+    if preview and model is None:
+        model = "TEXGISA"
+    if not model or not (preview or re.search(r"\b(run|train|start)\b", lower)):
+        return False
+    if preview and model != "TEXGISA":
+        _reply("Feature-importance preview is available for TEXGISA. Select TEXGISA to run that preview.")
+        return True
+    if "error" in summary:
+        _reply("Upload a CSV or load the synthetic demo before running a model.")
+        return True
+    columns = summary.get("column_names", [])
+    guessed_time, guessed_event = _guess_cols_from_summary(summary)
+    time_match = re.search(r"time(?:_col)?\s*=\s*([\w.\-]+)", lower)
+    event_match = re.search(r"event(?:_col)?\s*=\s*([\w.\-]+)", lower)
+    time_col = time_match.group(1) if time_match else guessed_time
+    event_col = event_match.group(1) if event_match else guessed_event
+    if not time_col or not event_col or time_col not in columns or event_col not in columns or time_col == event_col:
+        _reply("Choose two different, existing columns for follow-up time and event status. "
+               "For example: run CoxTime time=duration event=event epochs=20")
+        return True
+    epoch_match = re.search(r"epochs\s*=\s*(\d+)", lower)
+    epochs = int(epoch_match.group(1)) if epoch_match else 20
+    if not 1 <= epochs <= 1000:
+        _reply("Choose an epoch count from 1 to 1000.")
+        return True
+    label = f"{'Preview' if preview else 'Run'} {model} (time={time_col}, event={event_col}, epochs={epochs})"
+    _queue_confirmation(label, _run_direct, {
+        "algorithm_name": model,
+        "time_col": time_col,
+        "event_col": event_col,
+        "epochs": epochs,
+        "preview": preview,
+    })
+    _reply(f"Ready to {label}. Reply **yes** to start or **no** to cancel.")
+    return True
 
 
 # ========= RESULT RENDERERS & DIRECT RUN ===========
@@ -339,7 +371,10 @@ def _render_results(res, df_for_km=None):
             .reset_index(drop=True)
         )
 
-        # 首选新版 dataframe API（紧凑 + 隐藏索引 + 数字格式），旧版则走 CSS 兜底
+        st.download_button("Download metrics CSV", metrics_df.to_csv(index=False).encode("utf-8"),
+                           file_name="survival_metrics.csv", mime="text/csv")
+
+        # Render the compact metrics table, with a plain table as fallback.
         try:
             st.dataframe(
                 metrics_df,
@@ -361,8 +396,8 @@ def _render_results(res, df_for_km=None):
                     padding-top: 4px !important;
                     padding-bottom: 4px !important;
                 }
-                .metrics-table thead th { background: rgba(255,255,255,0.04); }
-                .metrics-table tbody tr:nth-child(odd) td { background: rgba(255,255,255,0.02); }
+                .metrics-table thead th { background: #f8fafc; }
+                .metrics-table tbody tr:nth-child(odd) td { background: #ffffff; }
                 </style>
                 """,
                 unsafe_allow_html=True,
@@ -397,18 +432,19 @@ def _render_results(res, df_for_km=None):
     if isinstance(surv_df, pd.DataFrame) and not surv_df.empty:
         st.subheader("Predicted Survival")
         _plot_survival_curves(surv_df)
+        st.download_button("Download survival curves CSV", surv_df.to_csv().encode("utf-8"),
+                           file_name="predicted_survival.csv", mime="text/csv")
 
     # --- FI ---
-    fi_obj = (
-        artifacts.get("feature_importance")
-        or res.get("feature_importance")
-        or res.get("texgi_importance")
-        or res.get("fi_table")
-    )
+    fi_obj = next((candidate for candidate in (
+        artifacts.get("feature_importance"), res.get("feature_importance"),
+        res.get("texgi_importance"), res.get("fi_table")) if candidate is not None), None)
     fi_df = _coerce_dataframe(fi_obj)
     if fi_df is not None and not fi_df.empty:
         st.subheader("Feature Importance (TEXGISA)")
         st.dataframe(fi_df.head(10))
+        st.download_button("Download feature importance CSV", fi_df.to_csv(index=False).encode("utf-8"),
+                           file_name="texgisa_feature_importance.csv", mime="text/csv")
     # --- KM (基于原始 df 的 duration/event) ---
     if df_for_km is not None and {"duration", "event"}.issubset(df_for_km.columns):
         st.subheader("Kaplan–Meier")
@@ -442,6 +478,8 @@ def _run_direct(
     if algorithm_name == "TEXGISA":
         # Restrict TEXGISA runs to the non-expert configuration.
         cfg["lambda_expert"] = 0.0
+    if preview and algorithm_name == "TEXGISA":
+        cfg["epochs"] = min(cfg["epochs"], 20)
     spinner = st.spinner("Running...") if show_status else None
     if spinner:
         spinner.__enter__()
@@ -450,6 +488,8 @@ def _run_direct(
     finally:
         if spinner:
             spinner.__exit__(None, None, None)
+    if isinstance(res, dict) and res.get("error"):
+        raise RuntimeError(res["error"])
     if show_status:
         st.success("Done.")
     # 从 DataManager 拿原始 df 传给 KM
@@ -459,7 +499,7 @@ def _run_direct(
         df_raw = get_df()
     else:
         df_raw = dm.get_data()
-    if isinstance(res, dict) and not include_importance:
+    if isinstance(res, dict) and not include_importance and algorithm_name != "TEXGISA":
         res.pop("feature_importance", None)
         artifacts = res.get("artifacts") if isinstance(res.get("artifacts"), dict) else None
         if artifacts:
@@ -504,12 +544,29 @@ def show():
         st.markdown("### 📁 Dataset")
         st.markdown('<div class="side-card">', unsafe_allow_html=True)
 
+        demo_path = Path(__file__).resolve().parents[1] / "demo_data" / "synthetic_survival_demo.csv"
+        if st.button("Load synthetic demo in chat", use_container_width=True):
+            demo_data = pd.read_csv(demo_path)
+            st.session_state.data_manager.load_data(demo_data, demo_path.name)
+            st.session_state.pop("last_results", None)
+            st.session_state.pop("last_results_df", None)
+            st.success(f"Loaded {len(demo_data)} synthetic records.")
         uploaded = st.file_uploader("Upload CSV", type=["csv"], accept_multiple_files=False, key="chat_uploader")
         if uploaded is not None:
             try:
-                df = pd.read_csv(uploaded)
-                st.session_state.data_manager.load_data(df, uploaded.name)
-                st.success(f"Loaded **{uploaded.name}** · shape = {df.shape[0]} × {df.shape[1]}")
+                raw = uploaded.getvalue()
+                fingerprint = hashlib.sha256(raw).hexdigest()
+                if st.session_state.get("chat_upload_fingerprint") != fingerprint:
+                    df = pd.read_csv(io.BytesIO(raw))
+                    st.session_state.data_manager.load_data(df, uploaded.name)
+                    st.session_state["chat_upload_fingerprint"] = fingerprint
+                    st.session_state.pop("last_results", None)
+                    st.session_state.pop("last_results_df", None)
+                    st.session_state.pop("qa_time_col", None)
+                    st.session_state.pop("qa_event_col", None)
+                    st.session_state.pop("qa_time_select", None)
+                    st.session_state.pop("qa_event_select", None)
+                st.success(f"Loaded **{uploaded.name}** · shape = {st.session_state.data_manager.get_data().shape[0]} × {st.session_state.data_manager.get_data().shape[1]}")
             except Exception as e:
                 st.error(f"Failed to read CSV: {e}")
 
@@ -568,10 +625,13 @@ def show():
             default_time = tcol or ("duration" if "duration" in cols else (cols[0] if cols else "duration"))
             default_event = ecol or ("event" if "event" in cols else (cols[1] if len(cols) > 1 else default_time))
 
-            if "qa_time_col" not in st.session_state:
+            if st.session_state.get("qa_time_col") not in cols:
                 st.session_state.qa_time_col = default_time
-            if "qa_event_col" not in st.session_state:
+                st.session_state["qa_time_select"] = default_time
+            if (st.session_state.get("qa_event_col") not in cols
+                    or st.session_state.get("qa_event_col") == st.session_state.qa_time_col):
                 st.session_state.qa_event_col = default_event
+                st.session_state["qa_event_select"] = default_event
 
             with qc1:
                 st.session_state.qa_time_col = st.selectbox(
@@ -590,133 +650,86 @@ def show():
                     key="qa_event_select",
                 )
 
-            btn_disabled = not has_data or not st.session_state.qa_time_col or not st.session_state.qa_event_col
+            btn_disabled = (not has_data or not st.session_state.qa_time_col or not st.session_state.qa_event_col
+                            or st.session_state.qa_time_col == st.session_state.qa_event_col)
 
             cols_qa = st.columns(4)
             with cols_qa[0]:
                 if st.button("Run TEXGISA (no expert)", use_container_width=True, disabled=btn_disabled):
                     t = st.session_state.qa_time_col; e = st.session_state.qa_event_col
-                    label = f"Run TEXGISA (time={t}, event={e}, epochs=120)"
+                    label = f"Run TEXGISA (time={t}, event={e}, epochs=20)"
                     prompt = f"About to {label}. Reply **yes** to proceed or **no** to cancel."
                     _queue_and_prompt(
                         label,
                         _run_direct,
-                        {"algorithm_name": "TEXGISA", "time_col": t, "event_col": e, "epochs": 120, "include_importance": False},
+                        {"algorithm_name": "TEXGISA", "time_col": t, "event_col": e, "epochs": 20, "include_importance": True},
                         prompt,
                         rerun=True,
                     )
             with cols_qa[1]:
                 if st.button("Run CoxTime", use_container_width=True, disabled=btn_disabled):
                     t = st.session_state.qa_time_col; e = st.session_state.qa_event_col
-                    label = f"Run CoxTime (time={t}, event={e}, epochs=120)"
+                    label = f"Run CoxTime (time={t}, event={e}, epochs=20)"
                     _queue_and_prompt(
                         label,
                         _run_direct,
-                        {"algorithm_name": "CoxTime", "time_col": t, "event_col": e, "epochs": 120},
+                        {"algorithm_name": "CoxTime", "time_col": t, "event_col": e, "epochs": 20},
                         f"About to {label}. Reply yes or no.",
                         rerun=True,
                     )
             with cols_qa[2]:
                 if st.button("Run DeepSurv", use_container_width=True, disabled=btn_disabled):
                     t = st.session_state.qa_time_col; e = st.session_state.qa_event_col
-                    label = f"Run DeepSurv (time={t}, event={e}, epochs=120)"
+                    label = f"Run DeepSurv (time={t}, event={e}, epochs=20)"
                     _queue_and_prompt(
                         label,
                         _run_direct,
-                        {"algorithm_name": "DeepSurv", "time_col": t, "event_col": e, "epochs": 120},
+                        {"algorithm_name": "DeepSurv", "time_col": t, "event_col": e, "epochs": 20},
                         f"About to {label}. Reply yes or no.",
                         rerun=True,
                     )
             with cols_qa[3]:
                 if st.button("Run DeepHit", use_container_width=True, disabled=btn_disabled):
                     t = st.session_state.qa_time_col; e = st.session_state.qa_event_col
-                    label = f"Run DeepHit (time={t}, event={e}, epochs=120)"
+                    label = f"Run DeepHit (time={t}, event={e}, epochs=20)"
                     _queue_and_prompt(
                         label,
                         _run_direct,
-                        {"algorithm_name": "DeepHit", "time_col": t, "event_col": e, "epochs": 120},
+                        {"algorithm_name": "DeepHit", "time_col": t, "event_col": e, "epochs": 20},
                         f"About to {label}. Reply yes or no.",
                         rerun=True,
                     )
             st.markdown('</div>', unsafe_allow_html=True)
 
-        # handle injected quick action
-        if "__inject_user" in st.session_state:
-            text = st.session_state.pop("__inject_user")
-            _process_user_text(text)
-            st.stop()
-
-        # chat input — the agent will call tools if prompted properly
-        user_text = st.chat_input("Type a message. E.g., run DeepHit time=duration event=event")
-        if user_text:
+        user_text = st.chat_input("Ask a question or type: run DeepHit time=duration event=event epochs=20")
+        if user_text and user_text.strip():
             text = user_text.strip()
-            low = text.lower()
-
-            handled = False
-
-            # Handle yes/no for any pending action first
+            lower = text.lower()
+            st.session_state.chat_messages.append(HumanMessage(content=text))
             if st.session_state.get("pending_action"):
-                if _run_pending_if_confirmed(text):
-                    handled = True
-
-            # 取列名猜测
-            stt = _dataset_state()
-            t_guess = "duration" if "duration" in stt["cols"] else (stt["cols"][0] if stt["cols"] else "duration")
-            e_guess = "event" if "event" in stt["cols"] else (stt["cols"][1] if len(stt["cols"]) > 1 else "event")
-
-            import re
-
-            def _get_arg(pat, default=None, cast=str):
-                m = re.search(pat, low)
-                return cast(m.group(1)) if m else default
-
-            # 专门支持“看我数据叫什么名”的小问题（不用 LLM，直接查）
-            if not handled and re.search(r"(dataset).*name|name.*(dataset)", low):
+                _run_pending_if_confirmed(text)
+            elif lower in {"yes", "y", "no", "n"}:
+                _reply("No analysis is waiting for confirmation. Choose a model or enter a run command.")
+            elif re.search(r"(dataset).*name|name.*(dataset)", lower):
                 name = _dataset_state()["name"] or "No dataset loaded"
-                with st.chat_message("assistant"):
-                    st.markdown(f"Current dataset: **{name}**")
-                st.session_state.chat_messages.append(AIMessage(content=f"Current dataset: {name}"))
-                handled = True
-
-            # -------- 轻量命令：直接跑你的代码（不经 LLM） --------
-            if not handled and (
-                low.startswith("preview")
-                or "preview_fi" in low
-                or "feature importance" in low
-                or ("texgi" in low and "preview" in low)
-            ):
-                t = _get_arg(r"time(?:_col)?\s*=\s*([\w\.\-]+)", t_guess)
-                e = _get_arg(r"event(?:_col)?\s*=\s*([\w\.\-]+)", e_guess)
-                ep = _get_arg(r"epochs\s*=\s*(\d+)", 80, int)
-                label = f"Preview TEXGISA feature importance (time={t}, event={e}, epochs={ep})"
-                _queue_confirmation(label, _run_direct, {"algorithm_name": "TEXGISA", "time_col": t, "event_col": e, "epochs": ep, "preview": True, "include_importance": False})
-                st.session_state.chat_messages.append(AIMessage(content=f"Queued: {label}. Reply yes or no to execute."))
-                handled = True
-
-            if not handled and (
-                ("texgisa" in low or "texgi" in low)
-                and (
-                    low.startswith("run")
-                    or low.startswith("train")
-                    or " run " in low
-                    or " train " in low
-                )
-            ):
-                t = _get_arg(r"time(?:_col)?\s*=\s*([\w\.\-]+)", t_guess)
-                e = _get_arg(r"event(?:_col)?\s*=\s*([\w\.\-]+)", e_guess)
-                ep = _get_arg(r"epochs\s*=\s*(\d+)", 150, int)
-                label = f"Run TEXGISA (time={t}, event={e}, epochs={ep})"
-                _queue_confirmation(label, _run_direct, {"algorithm_name": "TEXGISA", "time_col": t, "event_col": e, "epochs": ep, "preview": False, "include_importance": False})
-                st.session_state.chat_messages.append(AIMessage(content=f"Queued: {label}. Reply yes to start or no to cancel."))
-                handled = True
-
-            if handled:
-                st.session_state.chat_messages.append(HumanMessage(content=text))
+                _reply(f"Current dataset: **{name}**")
+            elif "compare" in lower and ("model" in lower or "algorithm" in lower):
+                comparison = compare_algorithms()
+                lines = ["| Model | Main use |", "|---|---|"]
+                for model, use in comparison["recommendations"].items():
+                    lines.append(f"| {use} | {model} |")
+                _reply("\n".join(lines))
+            elif "column" in lower and ("data" in lower or "dataset" in lower):
+                summary = st.session_state.data_manager.get_data_summary()
+                _reply("Columns: " + ", ".join(map(str, summary.get("column_names", [])))
+                       if "error" not in summary else "Upload a CSV first to inspect its columns.")
+            elif _queue_model_from_text(text, st.session_state.data_manager.get_data_summary()):
+                pass
             else:
-                # 其他自由文本 -> 走 LLM（但会被 B 步的上下文“约束”）
-                _process_user_text(text)
-                st.stop()
-
+                # The question helper answers common concepts locally and uses Groq
+                # for other wording when a key is configured.
+                from utils.help_bot import answer
+                _reply(answer(text))
 
 
     # ---- right: Direct run (no LLM; guaranteed to execute) ----
@@ -741,13 +754,16 @@ def show():
                 event_index = event_options.index("event") if "event" in event_options else min(1, len(event_options) - 1)
                 time_col = st.selectbox("Time column", options=time_options, index=time_index)
                 event_col = st.selectbox("Event column", options=event_options, index=event_index)
-                epochs = st.number_input("Epochs", 10, 1000, 150, step=10)
+                epochs = st.number_input("Epochs", 2, 1000, 20, step=2)
                 lr = st.number_input("Learning rate", 1e-5, 1.0, 0.01, step=0.001, format="%.5f")
                 batch_size = st.number_input("Batch size", 8, 512, 64, step=8)
                 if algo == "TEXGISA":
                     st.caption("TEXGISA runs use the non-expert configuration (lambda_expert=0).")
 
-                submitted = st.form_submit_button("Run now")
+                invalid_mapping = time_col == event_col
+                if invalid_mapping:
+                    st.warning("Choose different time and event columns.")
+                submitted = st.form_submit_button("Run now", disabled=invalid_mapping)
                 if submitted:
                     algo_name = "TEXGISA" if algo.startswith("TEXGISA") else algo
                     label = f"Run {algo_name} (time={time_col}, event={event_col}, epochs={epochs}, lr={lr}, batch={batch_size})"
@@ -762,7 +778,7 @@ def show():
                             "lr": lr,
                             "batch_size": batch_size,
                             "preview": False,
-                            "include_importance": False,
+                            "include_importance": True,
                         },
                     )
                     st.session_state.chat_messages.append(AIMessage(content=f"About to {label}. Reply yes or no to continue."))
