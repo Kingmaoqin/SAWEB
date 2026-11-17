@@ -5,6 +5,10 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 import streamlit as st
+import torch
+
+# Keep small interactive training runs responsive on shared CPU hosts.
+torch.set_num_threads(min(2, os.cpu_count() or 1))
 
 # Streamlit 要求 set_page_config 是脚本中的第一条命令，因此放在任何其他 st 调用之前
 st.set_page_config(page_title="DHAI Lab Survival Analysis Platform", layout="wide")
@@ -83,7 +87,7 @@ def main():
         sidebar_options = ["Home", "Our Datasets", "Our Experiments", "Our Results", "History", "Favorite Models"]
         sidebar_selected = st.selectbox("Navigation", sidebar_options)
         if sidebar_selected != "Home":
-            user_center.show()
+            user_center.show(sidebar_selected)
         else:
             st.info("Return to the main page using the top navigation buttons.")
         

@@ -11,6 +11,7 @@ import pandas as pd
 import numpy as np
 import itertools
 import math
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Set
 
 import plotly.graph_objects as go
@@ -23,6 +24,7 @@ from algorithm.texgi_cf import generate_texgi_counterfactuals
 from models import coxtime, deepsurv, deephit
 from models.texgisa_backend import run_texgisa_dual_backend
 from utils.identifiers import canonicalize_series
+from utils.user_center import record_result
 from html import escape
 
 _TOOLTIP_STYLE = """
@@ -2208,6 +2210,25 @@ def show():
             "- For **TEXGISA**, you can set **λ_smooth** and **λ_expert**, and edit **Expert Rules**."
         )
 
+    demo_path = Path(__file__).resolve().parents[1] / "demo_data" / "synthetic_survival_demo.csv"
+    demo_col, download_col = st.columns(2)
+    with demo_col:
+        if st.button("Load synthetic survival demo", use_container_width=True):
+            demo_data = pd.read_csv(demo_path)
+            st.session_state["clinical_data"] = demo_data
+            st.session_state.pop("results", None)
+            st.session_state.data_manager.load_data(demo_data, demo_path.name)
+            st.success(f"Loaded synthetic demo: {len(demo_data)} patients.")
+    with download_col:
+        st.download_button(
+            "Download synthetic demo CSV",
+            data=demo_path.read_bytes(),
+            file_name=demo_path.name,
+            mime="text/csv",
+            use_container_width=True,
+        )
+    st.caption("Synthetic example: 160 patients; duration is in simulated months and event=1 indicates an observed event.")
+
     uploaded = uploader_with_help(
         "Upload CSV",
         key="clinical_upload",
@@ -2697,6 +2718,7 @@ def show():
                 except Exception:
                     pass
                 st.session_state["results"] = results
+                record_result(algo, results, "Model Training")
                 st.success("✅ FI preview done.")
             except Exception as e:
                 st.error(f"Preview failed: {e}")
@@ -2727,6 +2749,7 @@ def show():
                     pass
 
                 st.session_state["results"] = results
+                record_result(algo, results, "Model Training")
                 st.success("✅ Training completed.")
 
             except Exception as e:
@@ -2754,6 +2777,7 @@ def show():
                 except Exception:
                     pass
                 st.session_state["results"] = results
+                record_result(algo, results, "Model Training")
                 st.success("✅ Training completed with hazard playback enabled.")
             except Exception as e:
                 st.error(f"Run failed: {e}")
@@ -2764,6 +2788,7 @@ def show():
                 cfg = dict(config)
                 results = run_analysis(algo, df, cfg)
                 st.session_state["results"] = results
+                record_result(algo, results, "Model Training")
                 st.success("✅ Training completed.")
             except Exception as e:
                 st.error(f"Run failed: {e}")

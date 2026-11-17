@@ -1,124 +1,82 @@
+"""Session-scoped dataset and analysis summaries for the sidebar."""
+
+from datetime import datetime
+from numbers import Real
+
+import pandas as pd
 import streamlit as st
 
-def show():
-    # 自定义CSS样式
-    st.markdown("""
-    <style>
-    /* 全局容器样式 */
-    .user-center {
-        background: #ffffff;
-        border-radius: 12px;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-        padding: 1.5rem;
-        margin-bottom: 2rem;
-    }
 
-    /* Radio组件容器 */
-    div[data-testid="stVerticalBlock"] > div[style*="flex-direction: column"] {
-        gap: 0.5rem !important;
-    }
+MODELS = ("CoxTime", "DeepSurv", "DeepHit", "TEXGISA")
+SECTIONS = ("Our Datasets", "Our Experiments", "Our Results", "History", "Favorite Models")
 
-    /* 隐藏原生radio按钮 */
-    div[role="radiogroup"] > div[data-testid="stVerticalBlock"] > div[role="radio"] {
-        display: none !important;
-    }
 
-    /* 标签基础样式 */
-    div[role="radiogroup"] label {
-        display: block !important;
-        margin: 0 !important;
-        padding: 1rem !important;
-        border: 1px solid #e0e0e0 !important;
-        border-radius: 8px !important;
-        transition: all 0.3s ease !important;
-        cursor: pointer !important;
-        background: #ffffff !important;
-        color: #000000 !important;
-    }
+def _metrics(result):
+    source = result.get("metrics", result) if isinstance(result, dict) else {}
+    return {key: float(value) for key, value in source.items()
+            if isinstance(value, Real) and pd.notna(value) and not isinstance(value, bool)}
 
-    /* 悬停状态 */
-    div[role="radiogroup"] label:hover {
-        background: #f8f9fa !important;
-        transform: translateX(5px);
-        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-    }
 
-    /* 选中状态 */
-    div[role="radiogroup"] div[data-testid="stVerticalBlock"] > div[role="radio"][aria-checked="true"] + label {
-        background: #2E86C1 !important;
-        color: #ffffff !important;
-        border-color: #2E86C1 !important;
-    }
+def record_result(model, result, source):
+    """Save a small run summary in this browser session, without patient data."""
+    history = st.session_state.setdefault("analysis_history", [])
+    history.append({
+        "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "model": model,
+        "source": source,
+        "metrics": _metrics(result),
+    })
+    st.session_state["analysis_history"] = history[-20:]
 
-    /* 预览区样式 */
-    .preview-container {
-        background: #f8f9fa;
-        border-radius: 8px;
-        padding: 1.5rem;
-        margin-top: 1rem;
-        min-height: 100px;
-    }
-    </style>
-    """, unsafe_allow_html=True)
 
-    # 用户中心头部
-    st.markdown("""
-    <div class="user-center">
-        <div style="display: flex; align-items: center; gap: 1rem; margin-bottom: 1.5rem;">
-            <div style="width: 48px; height: 48px; border-radius: 50%; 
-                        background: #2E86C1; display: grid; place-items: center; color: white;">
-                U
-            </div>
-            <div>
-                <h3 style="margin: 0; color: #2E86C1;">Researcher</h3>
-                <p style="margin: 0; color: #666;">researcher@dhailab.com</p>
-            </div>
-        </div>
-        <div style="margin-bottom: 1.5rem;">
-            <div style="display: flex; justify-content: space-between; margin-bottom: 0.5rem;">
-                <span style="color: #666;">Storage</span>
-                <span style="color: #2E86C1;">65/100 GB</span>
-            </div>
-            <div style="height: 8px; background: #f0f2f6; border-radius: 4px;">
-                <div style="width: 65%; height: 100%; background: #2E86C1; border-radius: 4px;"></div>
-            </div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+def show(section=None):
+    """Render real summaries from the current browser session."""
+    if section is None:
+        section = st.selectbox("Section", SECTIONS)
+    st.subheader(section)
 
-    # 导航选项
-    options = {
-        "Our Datasets": "📁",
-        "Our Experiments": "🧪",
-        "Our Results": "📊",
-        "History": "🕒",
-        "Favorite Models": "⭐"
-    }
-    
-    selected = st.radio(
-        "Navigation",
-        [f"{icon} {name}" for name, icon in options.items()],
-        label_visibility="collapsed"
-    )
-    selected_option = selected.split(" ", 1)[1]
+    if section == "Our Datasets":
+        manager = st.session_state.get("data_manager")
+        data = manager.get_data() if manager is not None else None
+        if data is None:
+            data = st.session_state.get("clinical_data")
+        if not isinstance(data, pd.DataFrame):
+            st.info("No dataset loaded in this session.")
+            return
+        st.write(f"{len(data)} rows · {len(data.columns)} columns")
+        st.caption(", ".join(map(str, data.columns)))
+        st.dataframe(data.head(5), hide_index=True, use_container_width=True)
+        st.download_button("Download current CSV", data.to_csv(index=False).encode("utf-8"),
+                           file_name="current_survival_data.csv", mime="text/csv")
+        return
 
-    # 预览内容
-    content_map = {
-        "Our Datasets": "🔍 Showing last 5 datasets...",
-        "Our Experiments": "⏳ Loading recent experiments...",
-        "Our Results": "📈 Visualizing model metrics...",
-        "History": "🕰️ Retrieving 30-day activity...",
-        "Favorite Models": "❤️ Loading saved models..."
-    }
+    history = st.session_state.get("analysis_history", [])
+    if section == "Favorite Models":
+        selected = st.multiselect("Models to keep handy", MODELS,
+                                  default=st.session_state.get("favorite_models", []))
+        st.session_state["favorite_models"] = selected
+        if selected:
+            st.caption("Saved for this browser session: " + ", ".join(selected))
+        return
 
-    st.markdown("""
-    <div class="preview-container">
-        <h4 style="color: #2E86C1; margin-top: 0;">Preview</h4>
-        <div style="background: white; padding: 1rem; border-radius: 8px;">
-            %s
-        </div>
-    </div>
-    """ % content_map[selected_option], unsafe_allow_html=True)
+    if not history:
+        st.info("Run a model to see results from this browser session.")
+        return
 
-if __name__ == "__main__":
-    show()
+    if section == "Our Results":
+        latest = history[-1]
+        st.caption(f"Latest: {latest['model']} · {latest['time']}")
+        if latest["metrics"]:
+            st.dataframe(pd.DataFrame(latest["metrics"].items(), columns=["Metric", "Value"]),
+                         hide_index=True, use_container_width=True)
+        else:
+            st.info("This run did not return numeric metrics.")
+        return
+
+    runs = list(reversed(history))
+    if section == "Our Experiments":
+        runs = runs[:5]
+    if section in ("Our Experiments", "History"):
+        st.dataframe(pd.DataFrame([{"Time": item["time"], "Model": item["model"],
+                                   "Page": item["source"]} for item in runs]),
+                     hide_index=True, use_container_width=True)

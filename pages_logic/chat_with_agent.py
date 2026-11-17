@@ -472,6 +472,8 @@ def _run_direct(
                 if "importance" in key.lower():
                     details.pop(key, None)
 
+    from utils.user_center import record_result
+    record_result(algorithm_name, res, "Chat Direct Run")
     st.session_state["last_results"] = res
     st.session_state["last_results_df"] = df_raw
     return res
